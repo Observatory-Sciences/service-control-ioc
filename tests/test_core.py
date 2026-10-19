@@ -243,6 +243,96 @@ async def test_tool_started_with_stack_up_goes_straight_to_ready() -> None:
 
 
 @pytest.mark.asyncio
+async def test_slow_bus_reads_still_go_straight_to_ready() -> None:
+    # The bus connects at once but reading the units takes a while; polls
+    # finish meanwhile. Nothing may be published until the units are read.
+    systemd = stack()
+    systemd.reads_open.clear()
+    h = Harness(systemd, ScriptedScan(scdemo_table(SPEC, EVERYTHING)), FakeClock(T))
+    async with running(h.core):
+        await h.scan.polls()
+        assert systemd.buses  # connected, units not read yet
+        assert h.events == []
+        systemd.reads_open.set()
+        await h.wait_text("stack post-ready")
+    assert h.faults() == []
+    assert not [e for e in h.events if e.new in ("unknown", "starting")]
+    assert h.texts()[-2:] == ["stack ready (+0.0 s)", "stack post-ready (+0.0 s)"]
+
+
+@pytest.mark.asyncio
+async def test_staged_start_split_burst_has_no_faults() -> None:
+    # scdemo-all and the sinks are queued in one read, the rest in a later one.
+    clock = FakeClock(T)
+    h = Harness(stack("stopped"), ScriptedScan(), clock)
+    first = (ALL_UNIT, UNITS["sink@1"], UNITS["sink@2"])
+    async with running(h.core):
+        await h.wait_text("stack stopped")
+        clock.now = T + 1
+        for unit in first:
+            h.change(unit, "queued", T + 1)
+        await h.wait_text("stack starting")
+        await h.scan.polls()
+        for unit in (UNITS["relay"], UNITS["controller"]):
+            h.change(unit, "queued", T + 1)
+        await h.wait_text("service controller waiting")
+        await h.scan.polls()
+    assert h.faults() == []
+    assert [e.new for e in h.events if e.kind == "stack"] == ["stopped", "starting"]
+
+
+@pytest.mark.asyncio
+async def test_orderly_stop_has_no_faults() -> None:
+    # systemctl stop scdemo-all: stop jobs on every unit, then reverse order.
+    clock = FakeClock(T)
+    h = Harness(stack(), ScriptedScan(scdemo_table(SPEC, EVERYTHING)), clock)
+    stop_job = (2, "/org/freedesktop/systemd1/job/2")
+    async with running(h.core):
+        await h.wait_text("stack post-ready")
+        clock.now = T + 1
+        for unit in (*UNITS.values(), ALL_UNIT):
+            h.change(unit, "active", T - 100, Job=stop_job)
+        await h.scan.polls()
+        clock.now = T + 2
+        h.change(ALL_UNIT, "stopped", T - 100)
+        h.change(UNITS["controller"], "stopped", T - 100)
+        h.scan.table = scdemo_table(SPEC, RELAY_UP)
+        await h.wait_text("edge controller -> relay.rep waiting")
+        await h.scan.polls()
+        clock.now = T + 3
+        h.change(UNITS["relay"], "stopped", T - 100)
+        h.scan.table = scdemo_table(SPEC, SINKS_UP)
+        await h.wait_text("service relay stopped")
+        await h.scan.polls()
+        clock.now = T + 4
+        for unit in (UNITS["sink@1"], UNITS["sink@2"]):
+            h.change(unit, "stopped", T - 100)
+        h.scan.table = scdemo_table(SPEC, ())
+        await h.wait_text("stack stopped")
+    assert h.faults() == []
+    stack_states = [
+        e.new for e in h.events if e.kind == "stack" and "post" not in e.text
+    ]
+    assert stack_states == ["ready", "starting", "stopped"]
+
+
+@pytest.mark.asyncio
+async def test_event_time_never_goes_back() -> None:
+    clock = FakeClock(T)
+    h = Harness(stack(), ScriptedScan(scdemo_table(SPEC, EVERYTHING)), clock)
+    async with running(h.core):
+        await h.wait_text("stack post-ready")
+        clock.now = T + 5
+        h.change(UNITS["controller"], "activating", T + 5)
+        await h.wait_text("service controller waiting")
+        clock.now = T + 2  # the wall clock steps back
+        h.change(UNITS["controller"], "active", T + 5)
+        await h.wait_text("service controller ready", times=2)
+    assert h.texts()[-1].endswith("(+5.0 s)")
+    assert not [t for t in h.texts() if "(+-" in t]
+
+
+@pytest.mark.asyncio
 async def test_core_subscriber_exception_does_not_stop(
     caplog: pytest.LogCaptureFixture,
 ) -> None:

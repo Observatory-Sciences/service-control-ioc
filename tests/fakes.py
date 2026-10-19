@@ -62,6 +62,8 @@ class FakeSystemd:
         self.connected = asyncio.Event()
         self.refuse = False
         self.attempts = 0
+        self.reads_open = asyncio.Event()  # clear it to hold GetAll reads
+        self.reads_open.set()
 
     async def connect(self) -> "FakeBus":
         self.attempts += 1
@@ -114,6 +116,7 @@ class FakeBus:
         return rows
 
     async def get_unit_properties(self, unit: str) -> dict[str, object]:
+        await self.systemd.reads_open.wait()
         self.reads.append(unit)
         return dict(self.systemd.units[unit])
 

@@ -117,7 +117,8 @@ class Core:
         # Latest observations.
         self._snapshots: dict[str, UnitSnapshot] = {}
         self._bus_connected = False
-        self._bus_tried = False  # a connection attempt has finished either way
+        self._bus_tried = False  # a connection attempt has failed
+        self._primed = False  # the first update has run
         self._scanned = False  # a poll has finished, successfully or not
         self._sockets: SocketTable | None = None
         self._scan_failing = False
@@ -125,7 +126,8 @@ class Core:
         self._files: dict[str, bool] = {}
         self._preflight_done = False
         self._preflight_failed = asyncio.Event()
-        self._unit_update_pending = False
+        self._unit_update: asyncio.Handle | None = None
+        self._last_now = float("-inf")  # the evaluator's time never goes back
 
     @property
     def spec(self) -> StackSpec:
@@ -179,6 +181,11 @@ class Core:
         except* _PreflightFailed:
             # Already logged per unit; the group adds nothing for the caller.
             raise SystemExit(2) from None
+        finally:
+            # Nothing is evaluated or published once run() has returned.
+            if self._unit_update is not None:
+                self._unit_update.cancel()
+                self._unit_update = None
 
     async def _exit_on_preflight_failure(self) -> None:
         await self._preflight_failed.wait()
@@ -189,10 +196,11 @@ class Core:
         try:
             bus = await self._connect()
         except Exception:
+            # Only a failure lets the first update go ahead without the bus; a
+            # success waits for on_connection(True), after the units are read.
             self._bus_tried = True
             self._update(poll_time=None)  # show the units as unknown meanwhile
             raise
-        self._bus_tried = True
         if self._preflight_done:
             return bus
         try:
@@ -284,12 +292,12 @@ class Core:
         after each signal, avoids transient findings such as ``unit_stopped``
         for units whose job is queued but not yet announced.
         """
-        if not self._unit_update_pending:
-            self._unit_update_pending = True
-            asyncio.get_running_loop().call_soon(self._apply_unit_change)
+        if self._unit_update is None:
+            loop = asyncio.get_running_loop()
+            self._unit_update = loop.call_soon(self._apply_unit_change)
 
     def _apply_unit_change(self) -> None:
-        self._unit_update_pending = False
+        self._unit_update = None
         self._evaluator.set_graph(self._graph(self._observer.after_graph()))
         self._update(poll_time=None)
 
@@ -308,10 +316,14 @@ class Core:
 
     def _update(self, poll_time: float | None, now: float | None = None) -> None:
         """Evaluate the latest inputs; ``poll_time`` only for a fresh scan."""
-        if not (self._scanned and (self._bus_connected or self._bus_tried)):
-            return
+        if not self._primed:
+            if not (self._scanned and (self._bus_connected or self._bus_tried)):
+                return
+            self._primed = True  # from now on every change is evaluated
+        now = max(self._clock() if now is None else now, self._last_now)
+        self._last_now = now
         inputs = Inputs(
-            now=self._clock() if now is None else now,
+            now=now,
             bus_connected=self._bus_connected,
             units=dict(self._snapshots),
             sockets=self._sockets,
