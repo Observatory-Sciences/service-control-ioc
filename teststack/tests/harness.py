@@ -21,6 +21,11 @@ from scdemo.protocol import ports
 
 EXIT_TIMEOUT: Final = 10
 PORT_SPAN: Final = 211  # offsets +0 .. +210
+# Bases stay in 10000-32000 with room for the +1000 fault ports: below Linux's
+# ephemeral range (32768-60999), so a client socket's local port can never
+# collide with a test listener.
+PORT_BASE_MIN: Final = 10000
+PORT_BASE_MAX: Final = 32000 - 1000 - PORT_SPAN
 _NOT_FREE: Final = (errno.EADDRINUSE, errno.EACCES)
 
 
@@ -45,9 +50,12 @@ def range_is_free(base: int) -> bool:
 def find_port_base(
     attempts: int = 50, is_free: Callable[[int], bool] = range_is_free
 ) -> int:
-    """A random base in 30000-59000 whose port range is free, or RuntimeError."""
+    """A random base in PORT_BASE_MIN..PORT_BASE_MAX whose port range is free.
+
+    RuntimeError if none is found in ``attempts`` tries.
+    """
     for _ in range(attempts):
-        base = random.randint(30000, 59000)
+        base = random.randint(PORT_BASE_MIN, PORT_BASE_MAX)
         if is_free(base):
             return base
     raise RuntimeError(f"no free port range found in {attempts} attempts")
@@ -261,7 +269,7 @@ def _tcp_port_bindable(port: int) -> bool:
     with socket.socket() as s:
         s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
-            s.bind(("0.0.0.0", port))
+            s.bind(("127.0.0.1", port))  # where the services bind
         except OSError as err:
             if err.errno in _NOT_FREE:
                 return False

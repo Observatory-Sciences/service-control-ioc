@@ -13,5 +13,5 @@ from harness import find_port_base
 
 @pytest.fixture
 def port_base() -> int:
-    """A random base in 30000-59000 whose whole +0..+210 range is free."""
+    """A random base in 10000-30789 whose whole +0..+210 range is free."""
     return find_port_base()

@@ -6,7 +6,13 @@ from pathlib import Path
 
 import pytest
 
-from harness import ServiceProc, find_port_base, range_is_free
+from harness import (
+    PORT_BASE_MAX,
+    PORT_BASE_MIN,
+    ServiceProc,
+    find_port_base,
+    range_is_free,
+)
 
 HERE = str(Path(__file__).parent)
 
@@ -18,7 +24,10 @@ def probe(port_base: int, **env: str) -> ServiceProc:
 
 
 def test_port_base_range_is_free(port_base: int) -> None:
-    assert 30000 <= port_base <= 59000
+    assert PORT_BASE_MIN <= port_base <= PORT_BASE_MAX
+    # Even the WRONG_PORT/WRONG_CONNECT ports (+1000) stay below Linux's
+    # ephemeral range (32768-60999), so outgoing connections cannot take them.
+    assert port_base + 1210 < 32768
     for offset in (0, 105, 210):
         with socket.socket() as s:
             s.bind(("127.0.0.1", port_base + offset))
@@ -112,8 +121,8 @@ def test_find_port_base_survives_a_tiny_fd_limit() -> None:
     code = (
         "import resource\n"
         "resource.setrlimit(resource.RLIMIT_NOFILE, (24, 24))\n"
-        "from harness import find_port_base\n"
-        "assert 30000 <= find_port_base() <= 59000\n"
+        "from harness import PORT_BASE_MAX, PORT_BASE_MIN, find_port_base\n"
+        "assert PORT_BASE_MIN <= find_port_base() <= PORT_BASE_MAX\n"
     )
     result = subprocess.run(
         [sys.executable, "-c", code],
