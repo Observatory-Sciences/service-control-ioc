@@ -40,6 +40,12 @@ class Env:
         except ValueError as err:
             raise ConfigError(f"{name}: not a number: {raw!r}") from err
 
+    def float_or_none(self, name: _Str) -> _Float | None:
+        """Like ``float`` but ``None`` when the variable is unset."""
+        if name not in self._environ:
+            return None
+        return self.float(name, 0.0)
+
     def str(self, name: _Str, default: _Str) -> _Str:
         return self._environ.get(name, default)
 

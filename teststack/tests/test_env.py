@@ -63,3 +63,10 @@ def test_exit_on_config_error_passes_through() -> None:
 
     main()
     assert calls == [1]
+
+
+def test_float_or_none() -> None:
+    assert Env({}).float_or_none("X") is None
+    assert Env({"X": "2.5"}).float_or_none("X") == 2.5
+    with pytest.raises(ConfigError, match="X"):
+        Env({"X": "abc"}).float_or_none("X")
