@@ -17,3 +17,18 @@ def test_sd_notify_sends_to_socket() -> None:
 
 def test_sd_notify_without_socket_is_noop() -> None:
     assert sd_notify("READY=1", {}) is False
+
+
+def test_sd_notify_missing_path_returns_false() -> None:
+    with tempfile.TemporaryDirectory(dir="/tmp") as tmp:
+        missing = Path(tmp) / "none.sock"
+        assert sd_notify("READY=1", {"NOTIFY_SOCKET": str(missing)}) is False
+
+
+def test_sd_notify_dead_socket_returns_false() -> None:
+    with tempfile.TemporaryDirectory(dir="/tmp") as tmp:
+        path = Path(tmp) / "d.sock"
+        rx = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+        rx.bind(str(path))
+        rx.close()  # the path remains, nothing is listening
+        assert sd_notify("READY=1", {"NOTIFY_SOCKET": str(path)}) is False
