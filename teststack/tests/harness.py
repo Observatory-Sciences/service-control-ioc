@@ -2,6 +2,7 @@
 
 import asyncio
 import errno
+import json
 import os
 import random
 import signal
@@ -10,6 +11,9 @@ import sys
 from collections.abc import Callable
 from types import TracebackType
 from typing import Final, Self
+
+import zmq
+import zmq.asyncio
 
 from scdemo.logs import parse_logfmt
 
@@ -45,6 +49,33 @@ def find_port_base(
         if is_free(base):
             return base
     raise RuntimeError(f"no free port range found in {attempts} attempts")
+
+
+async def zmq_req(
+    endpoint: str,
+    msg: dict[str, object],
+    timeout: float = 5,  # noqa: ASYNC109 - the plan fixes this signature
+) -> dict[str, object]:
+    """Send ``msg`` as JSON on a fresh REQ socket and return the JSON reply.
+
+    The socket is closed (linger 0) afterwards, so a timed-out request leaves
+    nothing behind. Raise TimeoutError if no reply arrives in ``timeout`` s.
+    """
+    ctx = zmq.asyncio.Context()
+    ctx.linger = 0
+    sock = ctx.socket(zmq.REQ)
+    try:
+        sock.connect(endpoint)
+        async with asyncio.timeout(timeout):
+            await sock.send(json.dumps(msg).encode())
+            raw = await sock.recv()
+    finally:
+        sock.close(linger=0)
+        ctx.term()
+    reply = json.loads(raw)
+    if not isinstance(reply, dict):
+        raise TypeError(f"reply is not a JSON object: {raw!r}")
+    return reply
 
 
 class ServiceProc:
