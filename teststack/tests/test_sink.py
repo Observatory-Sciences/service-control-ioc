@@ -134,3 +134,35 @@ async def test_sink_sigterm_after_push_and_peer_gone(port_base: int) -> None:
         async with asyncio.timeout(2):
             assert await sink.terminate() == 0
         assert sink.events[-1]["event"] == "shutdown"
+
+
+@pytest.mark.asyncio
+async def test_sink_logs_restart_when_sender_starts_again(port_base: int) -> None:
+    async with ServiceProc("sink", port_base, SCDEMO_INSTANCE="1") as sink:
+        await sink.wait_event("ready")
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as tx:
+            for seq in (0, 1, 2):
+                tx.sendto(pack_datagram(1, seq), ("127.0.0.1", port_base + 11))
+            first = await sink.wait_event("first_datagram", seq="0")
+            assert "restart" not in first
+            for seq in (0, 1):
+                tx.sendto(pack_datagram(1, seq), ("127.0.0.1", port_base + 11))
+            await sink.wait_event("first_datagram", seq="0", restart="1", after=first)
+        assert not any(e["event"] == "gap_detected" for e in sink.events)
+
+
+@pytest.mark.asyncio
+async def test_sink_wrong_connect_logs_actual_port(port_base: int) -> None:
+    async with ServiceProc(
+        "sink", port_base, SCDEMO_INSTANCE="1", SCDEMO_FAULT_WRONG_CONNECT="push"
+    ) as sink:
+        await sink.wait_event("connecting", name="push", port=str(port_base + 1103))
+
+
+@pytest.mark.asyncio
+async def test_sink_no_connect_logs_only_connect_skipped(port_base: int) -> None:
+    async with ServiceProc(
+        "sink", port_base, SCDEMO_INSTANCE="1", SCDEMO_FAULT_NO_CONNECT="push"
+    ) as sink:
+        await sink.wait_event("connect_skipped", name="push")
+        assert not any(e["event"] == "connecting" for e in sink.events)

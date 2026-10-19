@@ -28,7 +28,7 @@ from scdemo.protocol import SeqTracker, pack_datagram, ports, unpack_datagram
 from scdemo.service import run_service
 
 LISTENERS: Final = frozenset({"rep", "router", "pub", "pull", "http", "udp"})
-BIND_HOST: Final = "0.0.0.0"
+BIND_HOST: Final = "127.0.0.1"  # loopback only: configure is unauthenticated
 SINK_HOST: Final = "127.0.0.1"  # sinks run on the relay's host
 RETRY_PERIOD: Final = 1.0
 PING_PERIOD: Final = 1.0
@@ -77,9 +77,12 @@ class _UdpReceiver(asyncio.DatagramProtocol):
         except ValueError:
             return  # not one of ours
         first = self.tracker.count == 0
+        restarts = self.tracker.restarts
         missing = self.tracker.feed(seq)
         if first:
             log_event("first_datagram", name="udp", seq=seq)
+        elif self.tracker.restarts != restarts:
+            log_event("first_datagram", name="udp", seq=seq, restart=1)
         if missing is not None:
             log_event(
                 "gap_detected",
@@ -233,8 +236,10 @@ class Relay:
             handled.set()
             try:
                 await self._ping_loop(name, reader, writer)
-            except (ConnectionError, ValueError, TimeoutError):
-                # The sink went away, stalled, or sent an over-long line.
+            except (OSError, ValueError):
+                # The sink went away or stalled (OSError covers ConnectionError,
+                # TimeoutError and stray EHOSTUNREACH/ETIMEDOUT), or sent an
+                # over-long line (ValueError).
                 pass
             finally:
                 writer.close()
@@ -375,6 +380,7 @@ class Relay:
         )
         started.set()
         period = 1.0 / rate
+        reason = "shutdown"  # the only other way out is cancellation
         try:
             async with asyncio.timeout(faults.stop_sending_after):
                 seq = 0
@@ -388,9 +394,9 @@ class Relay:
                         due = now
                     await asyncio.sleep(max(0.0, due - now))
         except TimeoutError:
-            pass  # the stop_sending_after fault fired
+            reason = "fault"  # the stop_sending_after fault fired
         finally:
-            log_event("sending_stopped", name=name)
+            log_event("sending_stopped", name=name, reason=reason)
             transport.close()
 
     async def run_hw(self, rate: int) -> None:
@@ -418,8 +424,8 @@ class Relay:
                 writer.write(f"start {rate}\n".encode())
                 await writer.drain()
                 await reader.read()  # hwsim sends nothing; wait for EOF
-            except ConnectionError:
-                pass  # hwsim went away
+            except OSError:
+                pass  # hwsim went away (reset, EHOSTUNREACH, ETIMEDOUT, ...)
             finally:
                 self.counters.hw_connected = False
                 writer.close()

@@ -11,6 +11,7 @@ import zmq.asyncio
 
 from harness import ServiceProc, zmq_req
 from scdemo.http import HttpClient
+from scdemo.protocol import pack_datagram
 
 
 async def _assert_clean_exit(proc: ServiceProc) -> None:
@@ -401,4 +402,86 @@ async def test_relay_http_bad_clients_are_quiet(port_base):
             assert client.connections_opened == 1
         finally:
             await client.close()
+        await _assert_clean_exit(relay)
+
+
+@pytest.mark.asyncio
+async def test_relay_udp_logs_restart_when_hwsim_starts_again(port_base):
+    async with _sinks(port_base), ServiceProc("relay", port_base) as relay:
+        await relay.wait_event("ready")
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as tx:
+            for seq in (0, 1, 2):
+                tx.sendto(pack_datagram(0, seq), ("127.0.0.1", port_base + 105))
+            first = await relay.wait_event("first_datagram", name="udp", seq="0")
+            assert "restart" not in first
+            for seq in (0, 1):
+                tx.sendto(pack_datagram(0, seq), ("127.0.0.1", port_base + 105))
+            await relay.wait_event(
+                "first_datagram", name="udp", seq="0", restart="1", after=first
+            )
+        assert not any(e["event"] == "gap_detected" for e in relay.events)
+
+
+@pytest.mark.asyncio
+async def test_relay_udp1_connected_udp2_unconnected(port_base):
+    async with _sinks(port_base), ServiceProc("relay", port_base) as relay:
+        await relay.wait_event("ready")
+        await zmq_req(f"tcp://127.0.0.1:{port_base + 100}", _configure())
+        udp1 = await relay.wait_event("sending", name="udp@1")
+        udp2 = await relay.wait_event("sending", name="udp@2")
+        assert (udp1["connected"], udp2["connected"]) == ("1", "0")
+
+
+@pytest.mark.asyncio
+async def test_relay_sending_stopped_on_shutdown_has_reason(port_base):
+    async with _sinks(port_base), ServiceProc("relay", port_base) as relay:
+        await relay.wait_event("ready")
+        await zmq_req(f"tcp://127.0.0.1:{port_base + 100}", _configure())
+        await relay.wait_event("sending", name="udp@2")
+        await _assert_clean_exit(relay)
+        stopped = [e for e in relay.events if e["event"] == "sending_stopped"]
+        assert {(e["name"], e["reason"]) for e in stopped} == {
+            ("udp@1", "shutdown"),
+            ("udp@2", "shutdown"),
+        }
+
+
+@pytest.mark.asyncio
+async def test_relay_stop_sending_after_fault(port_base):
+    async with (
+        _sinks(port_base) as (s1, _s2),
+        ServiceProc("relay", port_base, SCDEMO_FAULT_STOP_SENDING_AFTER="0.5") as relay,
+    ):
+        await relay.wait_event("ready")
+        await zmq_req(f"tcp://127.0.0.1:{port_base + 100}", _configure(rate_hz=100))
+        await s1.wait_event("first_datagram")
+        stopped = await relay.wait_event(
+            "sending_stopped", name="udp@1", reason="fault", timeout=3
+        )
+        await relay.wait_event("sending_stopped", name="udp@2", reason="fault")
+        assert stopped["reason"] == "fault"
+        client = HttpClient("127.0.0.1", port_base + 104)
+        try:
+            before = (await client.get_json("/status"))["sent"]
+            await asyncio.sleep(0.3)
+            after = (await client.get_json("/status"))["sent"]
+        finally:
+            await client.close()
+        assert isinstance(before, dict)
+        assert before == after
+        assert before["udp@1"] > 0
+        # The sink sees the datagrams stop too: its PONG count stays put.
+        r, w = await asyncio.open_connection("127.0.0.1", port_base + 21)
+        try:
+            counts = []
+            for _ in range(2):
+                w.write(b"PING\n")
+                async with asyncio.timeout(2):
+                    counts.append(int((await r.readline()).split()[1]))
+                await asyncio.sleep(0.3)
+        finally:
+            w.close()
+            await w.wait_closed()
+        assert counts[0] == counts[1] > 0
+        assert relay.returncode is None
         await _assert_clean_exit(relay)

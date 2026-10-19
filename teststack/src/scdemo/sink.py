@@ -21,7 +21,7 @@ from scdemo.service import run_service
 LISTENERS: Final = frozenset({"udp", "stats"})
 EDGES: Final = frozenset({"push"})
 STATS_PERIOD: Final = 1.0
-BIND_HOST: Final = "0.0.0.0"
+BIND_HOST: Final = "127.0.0.1"  # loopback only: nothing here is authenticated
 _MONITOR_EVENTS: Final = zmq.EVENT_CONNECTED | zmq.EVENT_DISCONNECTED
 
 
@@ -58,9 +58,12 @@ class _UdpReceiver(asyncio.DatagramProtocol):
         except ValueError:
             return  # not one of ours
         first = self.tracker.count == 0
+        restarts = self.tracker.restarts
         missing = self.tracker.feed(seq)
         if first:
             log_event("first_datagram", seq=seq)
+        elif self.tracker.restarts != restarts:
+            log_event("first_datagram", seq=seq, restart=1)
         if missing is not None:
             log_event("gap_detected", expected=seq - missing, got=seq, missing=missing)
 
@@ -166,12 +169,12 @@ async def _connect_and_push(cfg: Config, tracker: SeqTracker) -> None:
     faults = cfg.faults
     await asyncio.sleep(faults.delay_connect)
     port = ports(cfg.port_base).pull
-    log_event("connecting", name="push", proto="tcp", host=cfg.relay_host, port=port)
     target = faults.connect_port("push", port)
     if target is None:
         log_event("connect_skipped", name="push")
         await asyncio.Event().wait()
         return
+    log_event("connecting", name="push", proto="tcp", host=cfg.relay_host, port=target)
     async with (
         _zmq_push(f"tcp://{cfg.relay_host}:{target}") as (sock, monitor),
         asyncio.TaskGroup() as tg,
