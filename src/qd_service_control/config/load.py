@@ -68,6 +68,10 @@ def load_config(path: Path) -> StackSpec:
 def load_config_text(text: str, file: Path = Path("<string>")) -> StackSpec:
     """Parse, validate and expand config ``text``; ``file`` is only for messages."""
     try:
+        root = yaml.compose(text, Loader=yaml.SafeLoader)
+        duplicates = _duplicate_keys(root, ()) if root is not None else []
+        if duplicates:
+            raise ConfigFileError(file, duplicates)
         data = yaml.safe_load(text)
     except yaml.YAMLError as err:
         raise ConfigFileError(
@@ -83,6 +87,35 @@ def load_config_text(text: str, file: Path = Path("<string>")) -> StackSpec:
     if expander.issues:
         raise ConfigFileError(file, expander.issues)
     return spec
+
+
+def _duplicate_keys(node: yaml.Node, path: tuple[int | str, ...]) -> list[ConfigIssue]:
+    """Repeated mapping keys, which YAML loaders silently resolve as last-wins."""
+    issues: list[ConfigIssue] = []
+    if isinstance(node, yaml.MappingNode):
+        first: dict[str, yaml.Node] = {}
+        for key_node, value_node in node.value:
+            key = key_node.value if isinstance(key_node, yaml.ScalarNode) else None
+            if not isinstance(key, str) or key == "<<":
+                continue
+            if key in first:
+                line = key_node.start_mark.line + 1
+                column = key_node.start_mark.column + 1
+                was = first[key].start_mark.line + 1
+                issues.append(
+                    ConfigIssue(
+                        _format_loc((*path, key)),
+                        f"duplicate key {key!r} (line {line}, column {column});"
+                        f" first at line {was}",
+                    )
+                )
+            else:
+                first[key] = key_node
+            issues.extend(_duplicate_keys(value_node, (*path, key)))
+    elif isinstance(node, yaml.SequenceNode):
+        for index, item in enumerate(node.value):
+            issues.extend(_duplicate_keys(item, (*path, index)))
+    return issues
 
 
 def _yaml_message(err: yaml.YAMLError) -> str:
@@ -419,6 +452,12 @@ class _Expander:
                 self.issue(f"{path}.instances", "neither end of the edge is instanced")
                 return
             numbers = [n for n in numbers if n in raw.instances]
+        if not numbers:
+            self.issue(
+                path,
+                "the instance numbers of its ends (and its 'instances') leave no edge",
+            )
+            return
 
         for n in dict.fromkeys(numbers):
             cid = raw.client if not client_n else f"{raw.client}@{n}"
@@ -445,6 +484,13 @@ class _Expander:
         self, path: str, raw: EdgeRaw, proto: Proto, client: _OwnerInfo
     ) -> Sender | None:
         if proto == "tcp":
+            if client.kind == "hosts":
+                self.issue(
+                    f"{path}.client",
+                    "an edge from a host must be a UDP edge with sender 'remote'"
+                    " (a host's TCP connections cannot be observed)",
+                )
+                return None
             if raw.sender is not None:
                 self.issue(f"{path}.sender", "sender is not allowed on a TCP edge")
                 return None

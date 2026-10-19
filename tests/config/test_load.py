@@ -436,3 +436,70 @@ def test_load_config_missing_file(tmp_path):
         load_config(tmp_path / "missing.yaml")
     assert e.value.file == tmp_path / "missing.yaml"
     assert e.value.issues[0].path == "<file>"
+
+
+def test_tcp_edge_from_a_host_is_error():
+    # A host can only be a remote UDP sender; a TCP edge from one used to pass
+    # validation and crash the evaluator.
+    text = HEAD + TCP_SERVICE + "edges:\n  - {client: h, server: svc.l}\n"
+    found = issues_of(text)
+    assert "edges[0].client" in found
+    assert "remote" in found["edges[0].client"][0]
+
+
+def test_duplicate_mapping_keys_are_errors():
+    text = """
+prefix: "X:SC"
+top: a
+services:
+  a:
+    unit: a.service
+    listeners:
+      p: {proto: tcp, port: 5000}
+      p: {proto: tcp, port: 5001}
+top: a
+"""
+    found = issues_of(text)
+    assert list(found) == ["services.a.listeners.p", "top"]
+    assert found["services.a.listeners.p"][0].startswith("duplicate key 'p' (line 9")
+    assert "first at line 8" in found["services.a.listeners.p"][0]
+
+
+def test_edge_expanding_to_nothing_is_error():
+    text = """
+prefix: "X:SC"
+top: a
+services:
+  a:
+    unit: a.service
+    listeners:
+      p: {proto: tcp, port: 5000}
+  b:
+    unit: "b@{n}.service"
+    instances: {from: 1, to: 2}
+edges:
+  - {client: b, server: a.p, instances: [3]}
+"""
+    found = issues_of(text)
+    assert list(found) == ["edges[0]"]
+    assert "no edge" in found["edges[0]"][0]
+
+
+def test_edge_dropped_by_when_stays_silent():
+    text = """
+prefix: "X:SC"
+top: a
+flags: {hw: false}
+services:
+  a:
+    unit: a.service
+    listeners:
+      p: {proto: tcp, port: 5000}
+  b:
+    unit: b.service
+    when: hw
+edges:
+  - {client: a, server: a.p, when: hw}
+  - {client: b, server: a.p}
+"""
+    assert load_config_text(text).edges == {}
