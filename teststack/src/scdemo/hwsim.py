@@ -6,7 +6,7 @@ import math
 import os
 import socket
 from dataclasses import dataclass
-from typing import Final
+from typing import Final, Literal
 
 from scdemo.env import Env, exit_on_config_error
 from scdemo.faults import Faults, announce_ready, run_fault_timers
@@ -26,6 +26,16 @@ class Config:
     hw_host: str
     relay_host: str
     faults: Faults
+
+
+StopReason = Literal["fault", "stop", "disconnect", "shutdown"]
+
+
+@dataclass(slots=True)
+class _Stopping:
+    """Why the sender is being cancelled; ``shutdown`` unless a client said."""
+
+    reason: StopReason = "shutdown"
 
 
 def load_config(environ: dict[str, str]) -> Config:
@@ -52,8 +62,12 @@ def parse_start(line: str) -> float | None:
     return rate
 
 
-async def _send_udp(cfg: Config, rate: float) -> None:
-    """Send datagrams at ``rate`` Hz until cancelled or ``stop_sending_after``."""
+async def _send_udp(cfg: Config, rate: float, stopping: _Stopping) -> None:
+    """Send datagrams at ``rate`` Hz until cancelled or ``stop_sending_after``.
+
+    ``sending_stopped`` carries ``reason=``: ``fault`` for stop_sending_after,
+    otherwise ``stopping.reason`` as set by whoever cancelled the sender.
+    """
     faults = cfg.faults
     target = faults.connect_port("udp", ports(cfg.port_base).relay_udp)
     if target is None:
@@ -82,30 +96,38 @@ async def _send_udp(cfg: Config, rate: float) -> None:
                         due = now
                     await asyncio.sleep(max(0.0, due - now))
         except TimeoutError:
-            pass  # the stop_sending_after fault fired
+            stopping.reason = "fault"  # the stop_sending_after fault fired
         finally:
-            log_event("sending_stopped", name="udp")
+            log_event("sending_stopped", name="udp", reason=stopping.reason)
 
 
 async def _serve_client(cfg: Config, reader: asyncio.StreamReader) -> None:
     sender: asyncio.Task[None] | None = None
+    stopping = _Stopping()
     async with asyncio.TaskGroup() as tg:
         try:
-            async for raw in reader:
-                line = raw.decode(errors="replace").strip()
-                if line == "stop":
-                    if sender is not None:
-                        sender.cancel()
-                        sender = None
-                elif line.startswith("start"):
-                    rate = parse_start(line)
-                    if rate is not None and (sender is None or sender.done()):
-                        sender = tg.create_task(_send_udp(cfg, rate))
-        except (ConnectionError, ValueError):
-            # Caught here, inside the TaskGroup body: raised past the group it
-            # would arrive wrapped in an ExceptionGroup. ConnectionError is the
-            # client going away; ValueError is an over-long line (stream limit).
-            pass
+            try:
+                async for raw in reader:
+                    line = raw.decode(errors="replace").strip()
+                    if line == "stop":
+                        if sender is not None:
+                            stopping.reason = "stop"
+                            sender.cancel()
+                            sender = None
+                    elif line.startswith("start"):
+                        rate = parse_start(line)
+                        if rate is not None and (sender is None or sender.done()):
+                            stopping = _Stopping()
+                            sender = tg.create_task(_send_udp(cfg, rate, stopping))
+            except (ConnectionError, ValueError):
+                # Caught here, inside the TaskGroup body: raised past the group
+                # it would arrive wrapped in an ExceptionGroup. ConnectionError
+                # is the client going away; ValueError is an over-long line
+                # (stream limit), after which the client is dropped.
+                pass
+            # Reached only when the client is gone (EOF, reset or dropped);
+            # cancellation by SIGTERM skips this and keeps reason=shutdown.
+            stopping.reason = "disconnect"
         finally:
             if sender is not None:
                 sender.cancel()

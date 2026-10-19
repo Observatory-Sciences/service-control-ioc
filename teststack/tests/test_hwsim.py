@@ -78,7 +78,7 @@ async def test_hwsim_stop_command_stops_datagrams(
             w.write(b"start 100\n")
             await _recv(relay_rx)
             w.write(b"stop\n")
-            await hw.wait_event("sending_stopped")
+            await hw.wait_event("sending_stopped", reason="stop")
             assert await _quiet(relay_rx)
 
 
@@ -92,7 +92,7 @@ async def test_hwsim_client_disconnect_stops_sending(
             w.write(b"start 100\n")
             await _recv(relay_rx)
         await hw.wait_event("disconnected", name="ctrl-client")
-        await hw.wait_event("sending_stopped")
+        await hw.wait_event("sending_stopped", reason="disconnect")
         assert await _quiet(relay_rx)
 
 
@@ -108,6 +108,8 @@ async def test_hwsim_sigterm_clean_exit_while_sending(
             async with asyncio.timeout(2):
                 assert await hw.terminate() == 0
     assert hw.events[-1]["event"] == "shutdown"
+    stopped = [e for e in hw.events if e["event"] == "sending_stopped"]
+    assert [e["reason"] for e in stopped] == ["shutdown"]
     assert hw.other_stdout == []
     assert hw.stderr_lines == []
 
@@ -123,7 +125,7 @@ async def test_hwsim_stop_sending_after_fault(
         async with _client(port_base) as (_r, w):
             w.write(b"start 100\n")
             await _recv(relay_rx)
-            await hw.wait_event("sending_stopped")
+            await hw.wait_event("sending_stopped", reason="fault")
             assert await _quiet(relay_rx)
 
 
@@ -209,7 +211,7 @@ async def test_hwsim_overlong_line_while_sending_stops_sender(
             w.write(b"start 100\n")
             await _recv(relay_rx)
             w.write(b"x" * (70 * 1024))
-            await hw.wait_event("sending_stopped")
+            await hw.wait_event("sending_stopped", reason="disconnect")
             await hw.wait_event("disconnected", name="ctrl-client")
             assert await _quiet(relay_rx)
             await _assert_clean_exit(hw)
@@ -227,7 +229,7 @@ async def test_hwsim_client_reset_no_traceback(
             # Linger 0: close() sends RST instead of FIN.
             c.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
         await hw.wait_event("disconnected", name="ctrl-client")
-        await hw.wait_event("sending_stopped")
+        await hw.wait_event("sending_stopped", reason="disconnect")
         await _assert_clean_exit(hw)
 
 
