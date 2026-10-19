@@ -1,137 +1,15 @@
 import asyncio
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Sequence
 
 import pytest
 
+from fakes import SERVICE_IFACE, UNIT_IFACE, FakeBus, FakeSystemd, unit_props
 from qd_service_control.model.types import UnitSnapshot
 from qd_service_control.observe.systemd import (
     SystemdObserver,
     snapshot_from_props,
     unit_path,
 )
-
-UNIT_IFACE = "org.freedesktop.systemd1.Unit"
-SERVICE_IFACE = "org.freedesktop.systemd1.Service"
-IDLE_JOB = (0, "/")
-
-
-def unit_props(**overrides: object) -> dict[str, object]:
-    """Unit + Service properties of a running unit, as GetAll unpacks them."""
-    props: dict[str, object] = {
-        "LoadState": "loaded",
-        "ActiveState": "active",
-        "SubState": "running",
-        "Result": "success",
-        "Job": IDLE_JOB,
-        "NRestarts": 0,
-        "MainPID": 100,
-        "ExecMainCode": 0,
-        "ExecMainStatus": 0,
-        "ExecMainStartTimestamp": 1_000_000,
-        "ActiveEnterTimestamp": 1_500_000,
-        "ControlGroup": "/system.slice/a.service",
-        "InvocationID": bytes.fromhex("00112233445566778899aabbccddeeff"),
-        "After": ["basic.target"],
-    }
-    props.update(overrides)
-    return props
-
-
-class FakeSystemd:
-    """In-memory systemd: unit properties shared by every FakeBus connection.
-
-    A unit missing from ``units`` is reported ``not-found``.
-    """
-
-    def __init__(self, units: Mapping[str, dict[str, object]]) -> None:
-        self.units = {name: dict(props) for name, props in units.items()}
-        self.buses: list[FakeBus] = []
-        self.connected = asyncio.Event()
-
-    async def connect(self) -> "FakeBus":
-        bus = FakeBus(self)
-        self.buses.append(bus)
-        self.connected.set()
-        return bus
-
-    @property
-    def bus(self) -> "FakeBus":
-        return self.buses[-1]
-
-
-class FakeBus:
-    """One connection to a FakeSystemd; implements ``SystemdBus``."""
-
-    def __init__(self, systemd: FakeSystemd) -> None:
-        self.systemd = systemd
-        self.subscribed = False
-        self.reads: list[str] = []
-        self._prop_handlers: dict[
-            str, list[Callable[[str, dict[str, object]], None]]
-        ] = {}
-        self._reload_handlers: list[Callable[[bool], None]] = []
-        self._dropped = asyncio.Event()
-        self._user_disconnect = False
-
-    async def subscribe(self) -> None:
-        self.subscribed = True
-
-    async def list_units_by_names(
-        self, names: Sequence[str]
-    ) -> list[tuple[str, str, str, str]]:
-        rows = []
-        for name in names:
-            props = self.systemd.units.get(name)
-            if props is None:
-                rows.append((name, "not-found", "inactive", "dead"))
-            else:
-                rows.append(
-                    (
-                        name,
-                        str(props["LoadState"]),
-                        str(props["ActiveState"]),
-                        str(props["SubState"]),
-                    )
-                )
-        return rows
-
-    async def get_unit_properties(self, unit: str) -> dict[str, object]:
-        self.reads.append(unit)
-        return dict(self.systemd.units[unit])
-
-    def on_properties_changed(
-        self, unit: str, cb: Callable[[str, dict[str, object]], None]
-    ) -> None:
-        self._prop_handlers.setdefault(unit, []).append(cb)
-
-    def on_reloading(self, cb: Callable[[bool], None]) -> None:
-        self._reload_handlers.append(cb)
-
-    async def wait_for_disconnect(self) -> None:
-        await self._dropped.wait()
-        if not self._user_disconnect:
-            raise EOFError
-
-    def disconnect(self) -> None:
-        self._user_disconnect = True
-        self._dropped.set()
-
-    # Test controls
-
-    def fire_properties_changed(
-        self, unit: str, interface: str, changed: Mapping[str, object]
-    ) -> None:
-        self.systemd.units[unit].update(changed)
-        for cb in self._prop_handlers.get(unit, []):
-            cb(interface, dict(changed))
-
-    def fire_reloading(self, active: bool) -> None:
-        for cb in self._reload_handlers:
-            cb(active)
-
-    def drop(self) -> None:
-        """The bus connection drops (wait_for_disconnect raises EOFError)."""
-        self._dropped.set()
 
 
 class Recorder:

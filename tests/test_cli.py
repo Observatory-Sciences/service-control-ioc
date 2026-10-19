@@ -32,3 +32,12 @@ def test_check_config_cli_reports_issues_and_exits_2(tmp_path, capsys):
     assert e.value.code == 2
     err = capsys.readouterr().err
     assert f"{bad}: services.svc.bogus: " in err
+
+
+def test_run_cli_bad_config_exits_2(tmp_path, capsys):
+    bad = tmp_path / "bad.yaml"
+    bad.write_text("prefix: P\ntop: svc\nservices: {svc: {unit: s.service, port: 1}}\n")
+    with pytest.raises(SystemExit) as e:
+        main(["run", str(bad), "--log-format", "json"])
+    assert e.value.code == 2
+    assert f"{bad}: services.svc.port: " in capsys.readouterr().err
