@@ -1,0 +1,793 @@
+"""Evaluator rules: element states, faults, findings, the overall state, events."""
+
+import time
+from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import replace
+from pathlib import Path
+
+from qd_service_control.config.load import load_config
+from qd_service_control.config.spec import FileSpec, StackSpec
+from qd_service_control.model.deps import DependencyGraph
+from qd_service_control.model.evaluator import Evaluator, Inputs
+from qd_service_control.model.types import (
+    ElementState,
+    Event,
+    FindingCode,
+    OverallState,
+    UnitSnapshot,
+)
+from qd_service_control.observe.procfs import (
+    TCP_ESTABLISHED,
+    TCP_LISTEN,
+    UDP_ESTABLISHED,
+    UDP_UNCONN,
+    OwnedSock,
+    Sock,
+    SocketTable,
+)
+
+SPEC = load_config(Path(__file__).parents[2] / "teststack" / "config" / "scdemo.yaml")
+UNITS = {sid: s.unit for sid, s in SPEC.services.items()}
+ALL_UNIT = "scdemo-all.service"
+AFTER = {
+    UNITS["controller"]: [UNITS["relay"]],
+    UNITS["relay"]: [UNITS["sink@1"], UNITS["sink@2"]],
+    ALL_UNIT: list(UNITS.values()),
+}
+T = 1_700_000_000.0
+LISTENERS = tuple(lid for lid, ls in SPEC.listeners.items() if not ls.on_host)
+EVERYTHING = LISTENERS + tuple(SPEC.edges)
+SINK2_GONE = (
+    "sink@2.udp",
+    "sink@2.stats",
+    "relay -> sink@2.stats",
+    "relay -> sink@2.udp",
+    "sink@2 -> relay.pull",
+)
+
+ready = ElementState.READY
+fault = ElementState.FAULT
+waiting = ElementState.WAITING
+stopped = ElementState.STOPPED
+unknown = ElementState.UNKNOWN
+
+
+def us(t: float) -> int:
+    return int(t * 1_000_000)
+
+
+def graph(after: Mapping[str, Iterable[str]] = AFTER) -> DependencyGraph:
+    return DependencyGraph(after, [*UNITS.values(), ALL_UNIT], exclude={ALL_UNIT})
+
+
+def make(
+    spec: StackSpec = SPEC, after: Mapping[str, Iterable[str]] = AFTER
+) -> Evaluator:
+    return Evaluator(spec, graph(after), started_at=T)
+
+
+# shorthand -> (active_state, sub_state, job_pending, main process running)
+_SHORT = {
+    "active": ("active", "running", False, True),
+    "stopped": ("inactive", "dead", False, False),
+    "queued": ("inactive", "dead", True, False),
+    "activating": ("activating", "start", False, True),
+    "deactivating": ("deactivating", "stop-sigterm", False, True),
+    "failed": ("failed", "failed", False, False),
+    "auto-restart": ("activating", "auto-restart", False, False),
+}
+
+
+def snap(
+    sid: str, state: str = "active", *, since: float = T, **changes: object
+) -> UnitSnapshot:
+    active, sub, job, running = _SHORT[state]
+    failed = state in ("failed", "auto-restart")
+    base = UnitSnapshot(
+        name=UNITS[sid],
+        load_state="loaded",
+        active_state=active,
+        sub_state=sub,
+        result="exit-code" if failed else "success",
+        job_pending=job,
+        n_restarts=0,
+        main_pid=1000 if running else 0,
+        exec_main_code=1 if failed else 0,
+        exec_main_status=1 if failed else 0,
+        exec_main_start_us=us(since),
+        active_enter_us=us(since) if state in ("active", "deactivating") else 0,
+        control_group=f"/system.slice/{UNITS[sid]}",
+        invocation_id=f"inv-{sid}",
+        after=(),
+    )
+    return replace(base, **changes)
+
+
+def _sockets(eid: str, i: int) -> list[OwnedSock]:
+    if eid in SPEC.listeners:
+        ls = SPEC.listeners[eid]
+        state = TCP_LISTEN if ls.proto == "tcp" else UDP_UNCONN
+        local = ls.address or "0.0.0.0"
+        sock = Sock(ls.proto, local, ls.port, "0.0.0.0", 0, state, i)
+        return [OwnedSock(sock, 1, UNITS[ls.owner])]
+    edge = SPEC.edges[eid]
+    server = SPEC.listeners[edge.server]
+    if edge.sender == "remote":
+        return []
+    ip = server.address or "127.0.0.1"
+    if edge.proto == "tcp":
+        sock = Sock("tcp", "127.0.0.1", 40000 + i, ip, server.port, TCP_ESTABLISHED, i)
+    elif edge.sender == "connected":
+        sock = Sock("udp", "127.0.0.1", 41000 + i, ip, server.port, UDP_ESTABLISHED, i)
+    else:
+        sock = Sock("udp", "0.0.0.0", 45000 + i, "0.0.0.0", 0, UDP_UNCONN, i)
+    return [OwnedSock(sock, 1, UNITS[edge.client])]
+
+
+def scenario(
+    now: float,
+    *,
+    state: str = "active",
+    since: float = T,
+    units: Mapping[str, str | UnitSnapshot | None] | None = None,
+    up: Iterable[str] = (),
+    extra: Iterable[OwnedSock] = (),
+    bus: bool = True,
+    scan: bool = True,
+    poll: bool = True,
+    spinning: Iterable[str] = (),
+    files: Mapping[str, bool] | None = None,
+) -> Inputs:
+    """Build Inputs: every service in ``state`` unless ``units`` says otherwise
+    (None = no snapshot), and a socket table where the ``up`` elements are present.
+    ``poll=False`` means the table is the previous scan (a unit-change update)."""
+    snaps: dict[str, UnitSnapshot] = {}
+    for sid in SPEC.services:
+        value = (units or {}).get(sid, state)
+        if value is None:
+            continue
+        s = value if isinstance(value, UnitSnapshot) else snap(sid, value, since=since)
+        snaps[s.name] = s
+    entries = list(extra)
+    for i, eid in enumerate(up):
+        entries.extend(_sockets(eid, i + 1))
+    return Inputs(
+        now=now,
+        bus_connected=bus,
+        units=snaps,
+        sockets=SocketTable(tuple(entries)) if scan else None,
+        poll_time=now if scan and poll else None,
+        cpu={u: None for u in snaps},
+        spinning=frozenset(UNITS[s] for s in spinning),
+        files=files or {},
+    )
+
+
+def without(*ids: str) -> tuple[str, ...]:
+    return tuple(x for x in EVERYTHING if x not in ids)
+
+
+def running(
+    spec: StackSpec = SPEC, after: Mapping[str, Iterable[str]] = AFTER
+) -> Evaluator:
+    """An evaluator that has seen the whole stack up at T+1."""
+    ev = make(spec, after)
+    ev.update(scenario(T + 1, up=EVERYTHING, files=dict.fromkeys(spec.files, True)))
+    assert ev.view().overall is OverallState.READY
+    return ev
+
+
+def st(ev: Evaluator, eid: str) -> ElementState:
+    return ev.view().elements[eid].state
+
+
+def codes(ev: Evaluator) -> dict[str, FindingCode]:
+    return {f.element: f.code for f in ev.view().findings}
+
+
+def texts(events: Sequence[Event], kind: str | None = None) -> list[str]:
+    return [e.text for e in events if kind is None or e.kind == kind]
+
+
+def with_file(spec: StackSpec = SPEC) -> StackSpec:
+    f = FileSpec("relay:file0", "relay", "/run/relay.ready", False, "pre", True, 30.0)
+    relay = replace(spec.services["relay"], files=(f.id,))
+    return replace(spec, files={f.id: f}, services={**spec.services, "relay": relay})
+
+
+# -- starting ----------------------------------------------------------------
+
+
+def test_tool_starts_after_stack_up() -> None:
+    ev = make()
+    events = ev.update(scenario(T + 100, up=EVERYTHING))
+    view = ev.view()
+    assert {e.state for e in view.elements.values()} == {ready}
+    assert view.overall is OverallState.READY
+    assert view.ready
+    assert view.post_ready
+    assert view.findings == ()
+    assert view.t0 == T
+    assert not [e for e in events if e.kind == "finding" or e.new == "fault"]
+    assert "stack ready (+100.0 s)" in texts(events)
+
+
+def test_clean_start_goes_ready_without_faults() -> None:
+    ev = make()
+    sinks_up = ("sink@1.udp", "sink@1.stats", "sink@2.udp", "sink@2.stats")
+    relay_up = (
+        *sinks_up,
+        *without(
+            "controller -> relay.rep",
+            "controller -> relay.router",
+            "controller -> relay.pub",
+            "controller -> relay.http",
+        ),
+    )
+    sinks = {
+        "sink@1": snap("sink@1", since=T + 3),
+        "sink@2": snap("sink@2", since=T + 3),
+    }
+    relay = {**sinks, "relay": snap("relay", since=T + 6)}
+    steps = [
+        scenario(T, state="stopped"),
+        scenario(T + 1, state="queued", poll=False),
+        scenario(
+            T + 2,
+            state="queued",
+            units={"sink@1": "activating", "sink@2": "activating"},
+            since=T + 2,
+            poll=False,
+        ),
+        scenario(T + 3, state="queued", units=sinks, poll=False),
+        scenario(T + 4, state="queued", units=sinks, up=sinks_up),
+        scenario(
+            T + 5,
+            state="queued",
+            units={**sinks, "relay": snap("relay", "activating", since=T + 5)},
+            up=sinks_up,
+            poll=False,
+        ),
+        scenario(T + 6, state="queued", units=relay, up=sinks_up, poll=False),
+        scenario(T + 7, state="queued", units=relay, up=relay_up),
+        scenario(
+            T + 8,
+            units={**relay, "controller": snap("controller", since=T + 8)},
+            up=relay_up,
+            poll=False,
+        ),
+        scenario(
+            T + 9,
+            units={**relay, "controller": snap("controller", since=T + 8)},
+            up=EVERYTHING,
+        ),
+    ]
+    events = [e for inputs in steps for e in ev.update(inputs)]
+    assert not [e for e in events if e.kind == "finding" or e.new == "fault"]
+    assert [e.new for e in events if e.kind == "stack" and "post" not in e.text] == [
+        "stopped",
+        "starting",
+        "ready",
+    ]
+    assert ev.view().t0 == T + 1
+    assert ev.view().ready
+
+
+# -- services ----------------------------------------------------------------
+
+
+def test_service_unknown_without_bus_or_snapshot() -> None:
+    ev = make()
+    ev.update(scenario(T + 1, up=EVERYTHING, bus=False))
+    assert {st(ev, sid) for sid in SPEC.services} == {unknown}
+    ev = make()
+    ev.update(scenario(T + 1, up=EVERYTHING, units={"relay": None}))
+    assert st(ev, "relay") is unknown
+    assert st(ev, "controller") is ready
+
+
+def test_unit_not_found() -> None:
+    ev = make()
+    ev.update(
+        scenario(
+            T + 1,
+            up=EVERYTHING,
+            units={"relay": snap("relay", "stopped", load_state="not-found")},
+        )
+    )
+    assert st(ev, "relay") is fault
+    assert codes(ev)["relay"] is FindingCode.UNIT_NOT_FOUND
+    assert ev.view().overall is OverallState.FAULT
+
+
+def test_unit_failed() -> None:
+    ev = running()
+    ev.update(
+        scenario(
+            T + 5,
+            up=without(*SINK2_GONE),
+            units={"sink@2": snap("sink@2", "failed", exec_main_status=3)},
+        )
+    )
+    assert st(ev, "sink@2") is fault
+    finding = next(f for f in ev.view().findings if f.element == "sink@2")
+    assert finding.code is FindingCode.UNIT_FAILED
+    assert "exited with status 3" in finding.message
+    assert finding.units == (UNITS["sink@2"],)
+
+
+def test_auto_restart_is_fault() -> None:
+    ev = running()
+    restarting = snap("sink@1", "auto-restart", exec_main_code=2, exec_main_status=9)
+    ev.update(scenario(T + 5, up=EVERYTHING, units={"sink@1": restarting}))
+    assert st(ev, "sink@1") is fault
+    finding = next(f for f in ev.view().findings if f.element == "sink@1")
+    assert finding.code is FindingCode.UNIT_FAILED
+    assert "killed by signal SIGKILL" in finding.message
+
+
+def test_restart_loop() -> None:
+    ev = make()
+    for i in range(4):
+        ev.update(
+            scenario(
+                T + 1 + i, up=EVERYTHING, units={"sink@1": snap("sink@1", n_restarts=i)}
+            )
+        )
+    assert st(ev, "sink@1") is ready  # three rises: at the limit, not over it
+    events = ev.update(
+        scenario(T + 5, up=EVERYTHING, units={"sink@1": snap("sink@1", n_restarts=4)})
+    )
+    assert st(ev, "sink@1") is fault
+    assert codes(ev)["sink@1"] is FindingCode.UNIT_RESTART_LOOP
+    assert any(t.startswith("FAULT unit_restart_loop sink@1: ") for t in texts(events))
+    events = ev.update(
+        scenario(T + 100, up=EVERYTHING, units={"sink@1": snap("sink@1", n_restarts=4)})
+    )
+    assert st(ev, "sink@1") is ready
+    assert "CLEARED unit_restart_loop sink@1 (+100.0 s)" in texts(events)
+
+
+def test_cpu_spin() -> None:
+    ev = running()
+    events = ev.update(scenario(T + 5, up=EVERYTHING, spinning=["relay"]))
+    assert st(ev, "relay") is fault
+    assert codes(ev)["relay"] is FindingCode.CPU_SPIN
+    assert ev.view().overall is OverallState.FAULT
+    assert any(t.startswith("FAULT cpu_spin relay: ") for t in texts(events))
+    events = ev.update(scenario(T + 6, up=EVERYTHING))
+    assert st(ev, "relay") is ready
+    assert "CLEARED cpu_spin relay (+6.0 s)" in texts(events)
+
+
+def test_service_ready_when_active() -> None:
+    ev = make()
+    ev.update(scenario(T + 1, up=EVERYTHING))
+    assert st(ev, "relay") is ready
+    assert ev.view().elements["relay"].detail == "active/running"
+
+
+def test_service_waiting_when_activating_deactivating_or_job() -> None:
+    ev = make()
+    ev.update(
+        scenario(
+            T + 1,
+            units={"sink@1": "activating", "sink@2": "deactivating", "relay": "queued"},
+            state="queued",
+        )
+    )
+    assert st(ev, "sink@1") is waiting
+    assert st(ev, "sink@2") is waiting
+    assert st(ev, "relay") is waiting
+    assert codes(ev) == {}
+
+
+def test_unit_start_timeout() -> None:
+    ev = make()
+    ev.update(scenario(T, state="queued", units={"relay": "activating"}))
+    ev.update(scenario(T + 30, state="queued", units={"relay": "activating"}))
+    assert st(ev, "relay") is waiting
+    ev.update(scenario(T + 31, state="queued", units={"relay": "activating"}))
+    assert st(ev, "relay") is fault
+    assert codes(ev)["relay"] is FindingCode.UNIT_START_TIMEOUT
+
+
+def test_whole_stack_stop_is_grey() -> None:
+    ev = running()
+    events = ev.update(scenario(T + 200, state="stopped"))
+    view = ev.view()
+    assert {e.state for e in view.elements.values()} == {stopped}
+    assert view.overall is OverallState.STOPPED
+    assert view.findings == ()
+    assert "stack stopped (+200.0 s)" in texts(events)
+
+
+def test_whole_stack_stop_in_progress_is_a_transient_fault() -> None:
+    # Units stop in reverse order. While the controller is already inactive
+    # and the rest still runs, the spec's rule applies: a unit stopped while
+    # the rest runs is a fault. It clears once everything is inactive.
+    ev = running()
+    ev.update(scenario(T + 200, up=EVERYTHING, units={"controller": "stopped"}))
+    assert codes(ev)["controller"] is FindingCode.UNIT_STOPPED
+    assert ev.view().overall is OverallState.FAULT
+    ev.update(scenario(T + 201, state="stopped"))
+    assert ev.view().overall is OverallState.STOPPED
+    assert codes(ev) == {}
+
+
+def test_manual_stop_of_one_unit_is_fault() -> None:
+    ev = running()
+    ev.update(scenario(T + 50, up=without(*SINK2_GONE), units={"sink@2": "stopped"}))
+    view = ev.view()
+    assert st(ev, "sink@2") is stopped
+    assert codes(ev)["sink@2"] is FindingCode.UNIT_STOPPED
+    assert st(ev, "sink@2.stats") is fault
+    assert st(ev, "relay -> sink@2.stats") is fault
+    edge_finding = view.elements["relay -> sink@2.stats"].finding
+    assert edge_finding is not None
+    assert edge_finding.code is FindingCode.EDGE_SERVER_MISSING
+    assert edge_finding.units == (UNITS["sink@2"],)
+    assert view.overall is OverallState.FAULT
+    assert not view.ready
+
+
+# -- listener, file and edge states -----------------------------------------
+
+
+def test_unknown_without_socket_scan() -> None:
+    ev = running(with_file())
+    events = ev.update(scenario(T + 5, scan=False, files={"relay:file0": True}))
+    view = ev.view()
+    for eid, element in view.elements.items():
+        expected = ready if element.kind == "service" else unknown
+        assert element.state is expected, eid
+    assert not view.ready
+    assert view.overall is OverallState.STARTING
+    assert not [e for e in events if e.kind == "finding"]
+
+
+def test_unknown_when_owner_unknown() -> None:
+    ev = running()
+    ev.update(scenario(T + 5, up=EVERYTHING, units={"relay": None}))
+    assert st(ev, "relay.rep") is unknown
+    assert st(ev, "controller -> relay.rep") is unknown  # server's service unknown
+    assert st(ev, "relay -> hw.ctrl") is unknown  # host server: only the client counts
+    assert st(ev, "sink@1.stats") is ready
+
+
+def test_stopped_when_whole_stack_stopped() -> None:
+    ev = make()
+    ev.update(scenario(T + 1, state="stopped"))
+    assert st(ev, "relay.rep") is stopped
+    assert st(ev, "controller -> relay.rep") is stopped
+
+
+def test_rule3_dropped_after_ready_is_fault() -> None:
+    ev = running(after={})
+    ev.update(scenario(T + 5, up=without("relay.pull")))
+    assert st(ev, "relay.pull") is fault  # post, no timeout: only rule 3 applies
+    assert codes(ev)["relay.pull"] is FindingCode.LISTENER_MISSING
+
+
+def test_restart_resets_was_ready() -> None:
+    gone = without("relay.pull", "sink@1 -> relay.pull", "sink@2 -> relay.pull")
+    ev = running(after={})
+    # A new invocation starts; the last scan (T+1) still shows the old sockets.
+    ev.update(
+        scenario(
+            T + 10,
+            up=EVERYTHING,
+            poll=False,
+            units={
+                "relay": snap(
+                    "relay", "activating", since=T + 10, invocation_id="inv-2"
+                )
+            },
+        )
+    )
+    ev.update(
+        scenario(
+            T + 11,
+            up=gone,
+            units={"relay": snap("relay", since=T + 10, invocation_id="inv-2")},
+        )
+    )
+    assert st(ev, "relay.pull") is waiting
+    assert st(ev, "sink@1 -> relay.pull") is waiting
+    # Same invocation: the drop is a fault.
+    ev = running(after={})
+    ev.update(scenario(T + 11, up=gone))
+    assert st(ev, "relay.pull") is fault
+    assert st(ev, "sink@1 -> relay.pull") is fault
+
+
+def test_rule1_dependent_up_makes_listener_fault() -> None:
+    ev = make()
+    ev.update(scenario(T + 5, up=without("relay.rep")))
+    assert st(ev, "relay.rep") is fault
+    finding = ev.view().elements["relay.rep"].finding
+    assert finding is not None
+    assert finding.code is FindingCode.LISTENER_MISSING
+    assert finding.units == (UNITS["relay"],)
+    assert UNITS["controller"] in finding.message
+
+
+def test_rule1_dependent_main_pid_counts() -> None:
+    ev = make()
+    ev.update(
+        scenario(T + 5, up=without("relay.rep"), units={"controller": "activating"})
+    )
+    assert st(ev, "relay.rep") is fault
+
+
+def test_rule1_needs_a_scan_after_the_dependent_started() -> None:
+    controller = snap("controller", "activating", since=T + 5)
+    ev = make()
+    ev.update(scenario(T + 4, up=without("relay.rep"), units={"controller": "queued"}))
+    ev.update(
+        scenario(
+            T + 5, up=without("relay.rep"), units={"controller": controller}, poll=False
+        )
+    )
+    assert st(ev, "relay.rep") is waiting
+    ev.update(
+        scenario(T + 6, up=without("relay.rep"), units={"controller": controller})
+    )
+    assert st(ev, "relay.rep") is fault
+
+
+def test_rule1_not_for_post() -> None:
+    ev = make()
+    ev.update(
+        scenario(
+            T + 5,
+            up=without("relay.pull", "sink@1 -> relay.pull", "sink@2 -> relay.pull"),
+        )
+    )
+    assert st(ev, "relay.pull") is waiting
+
+
+def test_rule1_ignores_owner_in_cycle() -> None:
+    ev = make(after={UNITS["relay"]: [UNITS["relay"]]})
+    ev.update(scenario(T + 5, up=without("relay.rep")))
+    assert st(ev, "relay.rep") is waiting
+
+
+def test_rule1_ignores_edge_endpoints() -> None:
+    ev = make()
+    ev.update(scenario(T + 0.5, up=without("controller -> relay.rep")))
+    assert st(ev, "relay.rep") is ready
+    assert st(ev, "controller -> relay.rep") is waiting
+
+
+def test_rule2_timeout() -> None:
+    ev = make(after={})
+    ev.update(scenario(T + 30, up=without("relay.rep", "controller -> relay.router")))
+    assert st(ev, "relay.rep") is waiting
+    assert st(ev, "controller -> relay.router") is waiting
+    ev.update(scenario(T + 31, up=without("relay.rep", "controller -> relay.router")))
+    assert st(ev, "relay.rep") is fault
+    assert st(ev, "controller -> relay.router") is fault
+    assert codes(ev)["controller -> relay.router"] is FindingCode.EDGE_MISSING
+
+
+def test_rule2_counts_from_owner_active_enter() -> None:
+    ev = make(after={})
+    ev.update(
+        scenario(
+            T + 31,
+            up=without("relay.rep"),
+            units={"relay": snap("relay", since=T + 10)},
+        )
+    )
+    assert st(ev, "relay.rep") is waiting
+
+
+def test_post_edge_waits_until_top_timeout() -> None:
+    edge = replace(SPEC.edges["relay -> sink@1.udp"], timeout=5.0)
+    spec = replace(SPEC, edges={**SPEC.edges, edge.id: edge})
+    up = without(edge.id)
+    top = {"controller": snap("controller", since=T + 10)}
+    ev = make(spec)
+    ev.update(scenario(T + 14, up=up, units=top))
+    assert st(ev, edge.id) is waiting
+    ev.update(scenario(T + 16, up=up, units=top))
+    assert st(ev, edge.id) is fault
+    assert codes(ev)[edge.id] is FindingCode.EDGE_MISSING
+    # Without a timeout a post edge waits for ever.
+    ev = make()
+    ev.update(scenario(T + 1000, up=up, units=top))
+    assert st(ev, edge.id) is waiting
+
+
+def test_waiting_otherwise() -> None:
+    ev = make(after={})
+    ev.update(scenario(T + 1, up=()))
+    assert st(ev, "relay.rep") is waiting
+    assert st(ev, "relay -> sink@1.stats") is waiting
+    assert ev.view().overall is OverallState.STARTING
+
+
+# -- findings ----------------------------------------------------------------
+
+
+def test_port_taken() -> None:
+    other = OwnedSock(
+        Sock("tcp", "127.0.0.1", 20100, "0.0.0.0", 0, TCP_LISTEN, 99),
+        7,
+        "other.service",
+    )
+    ev = make(after={})
+    ev.update(scenario(T + 31, up=without("relay.rep"), extra=[other]))
+    finding = ev.view().elements["relay.rep"].finding
+    assert finding is not None
+    assert finding.code is FindingCode.LISTENER_PORT_TAKEN
+    assert finding.message == "port held by other.service"
+    assert finding.units == (UNITS["relay"], "other.service")
+
+
+def test_listener_uses_unit_finding_when_unit_not_active() -> None:
+    ev = running()
+    events = ev.update(
+        scenario(T + 5, up=without(*SINK2_GONE), units={"sink@2": "failed"})
+    )
+    listener = ev.view().elements["sink@2.stats"]
+    assert listener.state is fault
+    assert listener.finding is not None
+    assert listener.finding.code is FindingCode.UNIT_FAILED
+    assert listener.finding.element == "sink@2"
+    assert len([t for t in texts(events) if t.startswith("FAULT unit_failed")]) == 1
+    assert FindingCode.LISTENER_MISSING not in codes(ev).values()
+
+
+def test_listener_missing_when_unit_has_no_finding() -> None:
+    ev = running()
+    ev.update(
+        scenario(T + 5, up=without(*SINK2_GONE), units={"sink@2": "deactivating"})
+    )
+    assert st(ev, "sink@2") is waiting
+    assert codes(ev)["sink@2.stats"] is FindingCode.LISTENER_MISSING
+
+
+def test_edge_missing_names_client() -> None:
+    ev = running()
+    ev.update(scenario(T + 5, up=without("controller -> relay.rep")))
+    finding = ev.view().elements["controller -> relay.rep"].finding
+    assert finding is not None
+    assert finding.code is FindingCode.EDGE_MISSING
+    assert finding.message == "listener present, connection missing"
+    assert finding.units == (UNITS["controller"],)
+
+
+def test_edge_server_missing_names_server() -> None:
+    ev = running(after={})
+    ev.update(scenario(T + 5, up=without("relay.pull", "sink@1 -> relay.pull")))
+    finding = ev.view().elements["sink@1 -> relay.pull"].finding
+    assert finding is not None
+    assert finding.code is FindingCode.EDGE_SERVER_MISSING
+    assert finding.units == (UNITS["relay"],)
+
+
+def test_host_client_edge_looks_at_server() -> None:
+    ev = running(after={})
+    ev.update(scenario(T + 5, up=without("relay.udp")))
+    finding = ev.view().elements["hw -> relay.udp"].finding
+    assert finding is not None
+    assert finding.code is FindingCode.EDGE_SERVER_MISSING
+    assert finding.units == (UNITS["relay"],)
+
+
+def test_file_missing() -> None:
+    spec = with_file()
+    ev = running(spec)
+    assert st(ev, "relay:file0") is ready
+    ev.update(scenario(T + 5, up=EVERYTHING, files={"relay:file0": False}))
+    assert st(ev, "relay:file0") is fault
+    finding = ev.view().elements["relay:file0"].finding
+    assert finding is not None
+    assert finding.code is FindingCode.FILE_MISSING
+    assert finding.units == (UNITS["relay"],)
+    assert "/run/relay.ready" in finding.message
+    ev.update(scenario(T + 6, up=EVERYTHING))
+    assert st(ev, "relay:file0") is unknown  # no probe result
+
+
+def test_fault_and_cleared_events() -> None:
+    ev = running()
+    events = ev.update(scenario(T + 5, up=without("controller -> relay.rep")))
+    raised = [e for e in events if e.kind == "finding"]
+    assert len(raised) == 1
+    assert raised[0].finding is not None
+    assert raised[0].new == "edge_missing"
+    events = ev.update(scenario(T + 6, up=EVERYTHING))
+    cleared = [e for e in events if e.kind == "cleared"]
+    assert [e.element for e in cleared] == ["controller -> relay.rep"]
+    assert cleared[0].old == "edge_missing"
+
+
+# -- overall and events ------------------------------------------------------
+
+
+def test_overall_states() -> None:
+    ev = make()
+    ev.update(scenario(T, state="stopped"))
+    assert ev.view().overall is OverallState.STOPPED
+    ev.update(scenario(T + 1, state="queued", units={"sink@1": "activating"}))
+    assert ev.view().overall is OverallState.STARTING
+    ev.update(scenario(T + 2, up=EVERYTHING))
+    assert ev.view().overall is OverallState.READY
+    ev.update(scenario(T + 3, up=without("relay.rep")))
+    assert ev.view().overall is OverallState.FAULT
+
+
+def test_post_elements_do_not_count_for_ready() -> None:
+    post = [eid for eid, e in ev_elements() if e == "post"]
+    ev = make(after={})
+    ev.update(scenario(T + 1, up=without(*post)))
+    assert ev.view().overall is OverallState.READY
+    assert not ev.view().post_ready
+    events = ev.update(scenario(T + 2, up=EVERYTHING))
+    assert "stack post-ready (+2.0 s)" in texts(events)
+    events = ev.update(scenario(T + 3, up=without("relay.pull")))
+    assert st(ev, "relay.pull") is fault
+    assert ev.view().overall is OverallState.READY
+    assert "stack post-not-ready (+3.0 s)" in texts(events)
+
+
+def ev_elements() -> list[tuple[str, str]]:
+    return [(lid, ls.phase) for lid, ls in SPEC.listeners.items() if not ls.on_host] + [
+        (eid, e.phase) for eid, e in SPEC.edges.items()
+    ]
+
+
+def test_bus_disconnect_unknown_then_recovers() -> None:
+    ev = running()
+    events = ev.update(scenario(T + 5, up=EVERYTHING, bus=False))
+    view = ev.view()
+    assert {st(ev, sid) for sid in SPEC.services} == {unknown}
+    assert {e.state for e in view.elements.values()} == {unknown}
+    assert not view.ready
+    assert not [e for e in events if e.kind == "finding"]
+    events = ev.update(scenario(T + 6, up=EVERYTHING))
+    assert ev.view().ready
+    assert not [e for e in events if e.kind == "finding" or e.new == "fault"]
+
+
+def test_no_events_for_unchanged_elements() -> None:
+    ev = running()
+    assert ev.update(scenario(T + 2, up=EVERYTHING)) == []
+
+
+def test_set_graph() -> None:
+    ev = make()
+    ev.set_graph(graph({}))
+    ev.update(scenario(T + 5, up=without("relay.rep")))
+    assert st(ev, "relay.rep") is waiting
+
+
+def test_event_text_formats() -> None:
+    ev = make()
+    events = ev.update(scenario(T + 2.5, up=EVERYTHING))
+    lines = texts(events)
+    assert "service relay ready: active/running (+2.5 s)" in lines
+    assert "listener relay.rep ready: 127.0.0.1:20100/tcp listening (+2.5 s)" in lines
+    assert "edge controller -> relay.rep ready: established (+2.5 s)" in lines
+    assert "stack ready (+2.5 s)" in lines
+    assert "stack post-ready (+2.5 s)" in lines
+    events = ev.update(scenario(T + 4, up=without("relay.rep")))
+    since = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(T + 4 - 5))
+    assert texts(events) == [
+        "listener relay.rep fault: 20100/tcp not bound (+4.0 s)",
+        (
+            "FAULT listener_missing relay.rep: 20100/tcp not bound (dropped after"
+            " being ready), look at scdemo-relay.service"
+            f' (journalctl -u scdemo-relay.service --since "{since}")'
+        ),
+        "stack fault (+4.0 s)",
+    ]
+    events = ev.update(scenario(T + 5, up=EVERYTHING))
+    assert texts(events) == [
+        "listener relay.rep ready: 127.0.0.1:20100/tcp listening (+5.0 s)",
+        "CLEARED listener_missing relay.rep (+5.0 s)",
+        "stack ready (+5.0 s)",
+    ]
