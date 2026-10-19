@@ -3,7 +3,7 @@
 import functools
 import sys
 from collections.abc import Callable, Mapping
-from typing import Final
+from typing import Final, ParamSpec
 
 # Env defines methods named int/float/str, which shadow the builtins inside the
 # class body, so annotations there use these aliases.
@@ -70,13 +70,19 @@ class Env:
         return found
 
 
-def exit_on_config_error(fn: Callable[[], None]) -> Callable[[], None]:
-    """Decorate a console-script ``main``: ``ConfigError`` becomes one stderr line and exit 2."""
+_P = ParamSpec("_P")
+
+
+def exit_on_config_error(fn: Callable[_P, None]) -> Callable[_P, None]:
+    """Decorate a console-script ``main``: ``ConfigError`` becomes one stderr line and exit 2.
+
+    Arguments pass through, so ``main(argv)`` works as well as ``main()``.
+    """
 
     @functools.wraps(fn)
-    def wrapper() -> None:
+    def wrapper(*args: _P.args, **kwargs: _P.kwargs) -> None:
         try:
-            fn()
+            fn(*args, **kwargs)
         except ConfigError as err:
             print(f"scdemo: {err}", file=sys.stderr)
             raise SystemExit(
