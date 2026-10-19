@@ -76,21 +76,26 @@ def parse_proc_net(text: str, proto: Literal["tcp", "udp"]) -> list[Sock]:
 
 
 def unit_from_cgroup(text: str) -> str | None:
-    """Return the service unit from a cgroup v2 ``0::/...`` line, if any."""
+    """Return the service unit from a cgroup v2 ``0::/...`` line, if any.
+
+    The innermost ``.service`` component wins, so a process in a sub-cgroup
+    of the unit (``x.service/control``, a delegated subtree) belongs to it.
+    """
     for line in text.splitlines():
         if not line.startswith("0::"):
             continue
-        last = line[3:].rstrip("/").rsplit("/", 1)[-1]
-        return last if last.endswith(".service") else None
+        for part in reversed(line[3:].strip("/").split("/")):
+            if part.endswith(".service"):
+                return part
+        return None
     return None
 
 
 def _read_net(proc_root: Path, proto: Literal["tcp", "udp"]) -> list[Sock]:
-    try:
-        text = (proc_root / "net" / proto).read_text()
-    except OSError:
-        return []
-    return parse_proc_net(text, proto)
+    """Read one /proc/net table. Errors propagate: an unreadable table is not
+    an empty one, and the caller makes the elements unknown rather than missing.
+    """
+    return parse_proc_net((proc_root / "net" / proto).read_text(), proto)
 
 
 def _pid_sockets(pid_dir: Path) -> tuple[str | None, list[int]] | None:
@@ -113,12 +118,13 @@ def _pid_sockets(pid_dir: Path) -> tuple[str | None, list[int]] | None:
 
 
 def scan_sockets(proc_root: Path = Path("/proc")) -> SocketTable:
-    """Map IPv4 TCP/UDP sockets to the owning pid and systemd service unit."""
+    """Map IPv4 TCP/UDP sockets to the owning pid and systemd service unit.
+
+    Raises ``OSError`` if ``/proc`` or a ``/proc/net`` table cannot be read; a
+    pid that vanishes or cannot be read is skipped.
+    """
     owners: dict[int, tuple[int, str | None]] = {}
-    try:
-        children = sorted(proc_root.iterdir())
-    except OSError:
-        children = []
+    children = sorted(proc_root.iterdir())
     for pid_dir in children:
         if not pid_dir.name.isdecimal():
             continue

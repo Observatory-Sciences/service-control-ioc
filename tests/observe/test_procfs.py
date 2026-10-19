@@ -32,6 +32,7 @@ def fake_proc(
 ) -> Path:
     proc = root / "proc"
     (proc / "net").mkdir(parents=True)
+    net = {"tcp": HDR, "udp": HDR, **net}
     for name, text in net.items():
         (proc / "net" / name).write_text(text)
     for pid, (cgroup, inodes) in pids.items():
@@ -143,10 +144,51 @@ def test_scan_sockets_ignores_non_socket_fds(tmp_path: Path) -> None:
     assert all(e.pid is None for e in table.entries)
 
 
-def test_scan_sockets_missing_net_files(tmp_path: Path) -> None:
+def test_scan_sockets_missing_net_files_raise(tmp_path: Path) -> None:
+    # An unreadable /proc/net file must not look like "no sockets": the core
+    # turns the error into unknown elements instead of missing ones.
     proc = tmp_path / "proc"
     proc.mkdir()
-    assert scan_sockets(proc).entries == ()
+    with pytest.raises(FileNotFoundError):
+        scan_sockets(proc)
+
+
+def test_scan_sockets_unreadable_net_file_raises(tmp_path: Path) -> None:
+    proc = fake_proc(tmp_path, net={"tcp": EL9_TCP}, pids={})
+    (proc / "net" / "udp").chmod(0)
+    try:
+        with pytest.raises(PermissionError):
+            scan_sockets(proc)
+    finally:
+        (proc / "net" / "udp").chmod(0o644)
+
+
+def test_unit_from_sub_cgroup() -> None:
+    # ExecStartPost helpers and delegated units run in a sub-cgroup.
+    assert (
+        unit_from_cgroup("0::/system.slice/scdemo-relay.service/control\n")
+        == "scdemo-relay.service"
+    )
+    assert unit_from_cgroup("0::/system.slice/x.service/a/b\n") == "x.service"
+    assert (
+        unit_from_cgroup("0::/user.slice/user@1000.service/app.slice/y.service\n")
+        == "y.service"
+    )
+
+
+def test_scan_attributes_sub_cgroup_process(tmp_path: Path) -> None:
+    proc = fake_proc(
+        tmp_path,
+        net={"tcp": EL9_TCP},
+        pids={
+            101: (
+                "0::/system.slice/scdemo-relay.service/control\n",
+                [RELAY_REP_INODE],
+            )
+        },
+    )
+    (rep,) = [e for e in scan_sockets(proc).entries if e.sock.inode == RELAY_REP_INODE]
+    assert rep.unit == "scdemo-relay.service"
 
 
 def test_read_cpu_usec(tmp_path: Path) -> None:
