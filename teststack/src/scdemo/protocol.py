@@ -28,18 +28,25 @@ class SeqTracker:
     ``count`` is every datagram fed, ``gaps`` the number of gap events,
     ``missing`` the datagrams skipped over by gaps, and ``late`` the datagrams
     that arrived below the next expected number (late or duplicated). A late
-    datagram does not reduce ``missing``.
+    datagram does not reduce ``missing``. ``restarts`` counts the sender
+    restarting its stream: a ``seq`` of 0 after traffic beyond seq 0 resyncs
+    the tracker (no gap, not late).
     """
 
     count: int = 0
     gaps: int = 0
     missing: int = 0
     late: int = 0
+    restarts: int = 0
     _expected: int | None = field(default=None, repr=False)
 
     def feed(self, seq: int) -> int | None:
         """Record ``seq``. Return the number missing before it, else None."""
         self.count += 1
+        if seq == 0 and self._expected is not None and self._expected > 1:
+            self.restarts += 1
+            self._expected = 1
+            return None
         if self._expected is None or seq == self._expected:
             self._expected = seq + 1
             return None

@@ -52,3 +52,24 @@ def test_ports_follow_table() -> None:
         p.hw_ctrl,
     ) == (20011, 20022, 20100, 20103, 20104, 20105, 20200)
     assert (p.router, p.pub) == (20101, 20102)
+
+
+def test_seq_tracker_seq_zero_after_traffic_is_a_restart() -> None:
+    t = SeqTracker()
+    assert [t.feed(s) for s in (0, 1, 2, 0, 1, 2)] == [None] * 6
+    assert (t.count, t.gaps, t.missing, t.late, t.restarts) == (6, 0, 0, 0, 1)
+    assert t.feed(4) == 1  # gap detection works again after the restart
+    assert (t.gaps, t.missing) == (1, 1)
+
+
+def test_seq_tracker_repeated_first_zero_is_a_duplicate() -> None:
+    t = SeqTracker()
+    assert [t.feed(s) for s in (0, 0)] == [None, None]
+    assert (t.late, t.restarts) == (1, 0)
+
+
+def test_seq_tracker_restart_after_late_start() -> None:
+    t = SeqTracker()
+    for s in (1000, 1001, 0, 1):
+        t.feed(s)
+    assert (t.count, t.gaps, t.late, t.restarts) == (4, 0, 0, 1)

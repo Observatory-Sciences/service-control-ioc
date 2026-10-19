@@ -4,6 +4,7 @@ import argparse
 import contextlib
 import math
 import os
+import re
 import subprocess
 import tempfile
 from collections.abc import Mapping, Sequence
@@ -17,8 +18,11 @@ GATING_STYLES: Final = ("none", "sleep", "waitport", "notify")
 DEFAULT_ROOT: Final = "/etc/systemd/system"
 GATING_FILE: Final = "50-gating.conf"
 FAULTS_FILE: Final = "60-faults.conf"
-_FAULT_PREFIXES: Final = ("SCDEMO_FAULT_", "SCDEMO_DELAY_")
-_CONTROLLER_UNITS: Final = frozenset({"scdemo-controller.service", "scdemo-controller"})
+_FAULT_KEY: Final = re.compile(r"SCDEMO_(FAULT|DELAY)_[A-Z0-9_]+")
+# Only scdemo services (templates and instances too). This also keeps NUL,
+# newlines and "/" out of the drop-in path.
+_UNIT_NAME: Final = re.compile(r"scdemo-[a-z]+(@[0-9]*)?\.service")
+_CONTROLLER_UNIT: Final = "scdemo-controller.service"
 _WAIT_FOR_PORT: Final = (
     "/opt/scdemo/bin/scdemo-wait-for-port ${SCDEMO_GATE_PROTO} ${SCDEMO_GATE_PORT}"
 )
@@ -48,9 +52,10 @@ def render_faults(settings: Mapping[str, str]) -> str:
     """The text of ``60-faults.conf``: one ``Environment=`` line per setting."""
     lines = ["[Service]"]
     for key, value in settings.items():
-        if not key.startswith(_FAULT_PREFIXES):
+        if not _FAULT_KEY.fullmatch(key):
             raise ValueError(
-                f"{key}: only SCDEMO_FAULT_* and SCDEMO_DELAY_* may be set"
+                f"{key!r}: only SCDEMO_FAULT_* and SCDEMO_DELAY_* may be set"
+                " (upper case letters, digits and _)"
             )
         if "\n" in value or "\r" in value:
             raise ValueError(f"{key}: value must not contain a newline")
@@ -94,6 +99,15 @@ def _reload() -> None:
         ) from err
 
 
+def normalise_unit(unit: str) -> str:
+    """``unit`` with ``.service`` added when it has no suffix; ConfigError unless
+    it is then an scdemo service name."""
+    full = unit if "." in unit else f"{unit}.service"
+    if not _UNIT_NAME.fullmatch(full):
+        raise ConfigError(f"{unit!r}: not an scdemo unit (scdemo-<name>[@<n>].service)")
+    return full
+
+
 def _parse_settings(items: Sequence[str]) -> dict[str, str]:
     if not items:
         raise ConfigError("fault: give at least one K=V setting")
@@ -130,12 +144,10 @@ def _build_parser() -> argparse.ArgumentParser:
 @exit_on_config_error
 def main(argv: Sequence[str] | None = None) -> None:
     args = _build_parser().parse_args(argv)
-    unit: str = args.unit
-    if not unit or "/" in unit or unit in {".", ".."}:
-        raise ConfigError(f"{unit!r}: not a unit name")
+    unit = normalise_unit(args.unit)
     dropin_dir: Path = args.root / f"{unit}.d"
     if args.command == "gating":
-        if unit in _CONTROLLER_UNITS and args.style == "waitport":
+        if unit == _CONTROLLER_UNIT and args.style == "waitport":
             raise ConfigError("waitport: scdemo-controller has no listener to wait for")
         if not math.isfinite(args.sleep) or args.sleep < 0:
             raise ConfigError(f"--sleep: must be a non-negative number: {args.sleep}")

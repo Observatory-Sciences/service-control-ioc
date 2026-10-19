@@ -234,3 +234,55 @@ def test_exit_on_config_error_keeps_arguments() -> None:
     with pytest.raises(SystemExit):
         main(["a"])
     assert seen == [["a"]]
+
+
+def test_render_faults_rejects_smuggled_key() -> None:
+    with pytest.raises(ValueError, match="LD_PRELOAD"):
+        render_faults({'SCDEMO_FAULT_X" "LD_PRELOAD': "/tmp/x.so"})
+
+
+@pytest.mark.parametrize(
+    "key", ["SCDEMO_FAULT_", "SCDEMO_FAULT_no_ready", "SCDEMO_DELAY_BIND\n", "SCDEMO_X"]
+)
+def test_render_faults_rejects_malformed_keys(key: str) -> None:
+    with pytest.raises(ValueError, match="SCDEMO_"):
+        render_faults({key: "1"})
+
+
+def test_bare_unit_name_gets_service_suffix(tmp_path: Path) -> None:
+    run(tmp_path, "fault", "scdemo-relay", "SCDEMO_FAULT_NO_READY=1")
+    assert [p.name for p in tmp_path.iterdir()] == ["scdemo-relay.service.d"]
+    assert (tmp_path / "scdemo-relay.service.d" / "60-faults.conf").exists()
+
+
+def test_bare_template_instance_gets_service_suffix(tmp_path: Path) -> None:
+    run(tmp_path, "gating", "scdemo-sink@2", "notify")
+    assert (tmp_path / "scdemo-sink@2.service.d" / "50-gating.conf").exists()
+
+
+@pytest.mark.parametrize(
+    "unit",
+    [
+        "qd-xspress.service",
+        "scdemo-relay\n",
+        "scdemo-relay.service\n",
+        "../x",
+        "scdemo-relay/../../x",
+        "scdemo-relay\0",
+        "scdemo-Relay.service",
+        "scdemo-relay.socket",
+        "",
+        ".",
+        "..",
+    ],
+)
+@pytest.mark.parametrize("command", ["gating", "fault", "clear"])
+def test_bad_unit_name_exits_2(
+    tmp_path: Path, unit: str, command: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    extra = {"gating": ["none"], "fault": ["SCDEMO_FAULT_NO_READY=1"], "clear": []}
+    with pytest.raises(SystemExit) as exc_info:
+        run(tmp_path, command, unit, *extra[command])
+    assert exc_info.value.code == 2
+    assert "not an scdemo unit" in capsys.readouterr().err
+    assert list(tmp_path.iterdir()) == []
