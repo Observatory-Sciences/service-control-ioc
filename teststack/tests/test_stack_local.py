@@ -47,7 +47,7 @@ async def test_full_stack_comes_up(port_base):
 @pytest.mark.asyncio
 async def test_ignored_config_times_out_and_retries(port_base):
     async with stack(port_base, relay={"SCDEMO_FAULT_IGNORE_CONFIG": "1"}) as s:
-        await s.controller.wait_event("config_timeout", timeout=10)
+        await s.controller.wait_event("config_timeout", timeout=10, reason="timeout")
         await s.controller.wait_event("configuring", timeout=10)
         assert not any(e["event"] == "ready" for e in s.controller.events)
         timeout = await s.controller.wait_event("config_timeout", timeout=10)
@@ -249,3 +249,35 @@ async def test_controller_bad_env_exits_2(port_base):
         assert await ctrl.wait_exit() == 2
         assert len(ctrl.stderr_lines) == 1
         assert "SCDEMO_FAULT_NO_CONNECT" in ctrl.stderr_lines[0]
+
+
+@pytest.mark.asyncio
+async def test_rejected_configure_logs_reason_rejected(port_base):
+    """A relay that answers ``ok: false``: config_timeout reason=rejected."""
+    async with (
+        _fake_relay(port_base) as (rep, _router),
+        ServiceProc("controller", port_base) as ctrl,
+    ):
+        async with asyncio.timeout(5):
+            await rep.recv()
+            await rep.send(json.dumps({"ok": False, "error": "nope"}).encode())
+        event = await ctrl.wait_event("config_timeout", timeout=5)
+        assert event["reason"] == "rejected"
+        assert event["error"] == "bad reply"
+        await _assert_clean_exit(ctrl)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("rate", ["0", "10001", "fast"])
+async def test_controller_bad_rate_exits_2(port_base, rate):
+    async with ServiceProc("controller", port_base, SCDEMO_RATE_HZ=rate) as ctrl:
+        assert await ctrl.wait_exit() == 2
+        assert len(ctrl.stderr_lines) == 1
+        assert "SCDEMO_RATE_HZ" in ctrl.stderr_lines[0]
+
+
+@pytest.mark.asyncio
+async def test_controller_max_rate_is_accepted(port_base):
+    async with ServiceProc("controller", port_base, SCDEMO_RATE_HZ="10000") as ctrl:
+        await ctrl.wait_event("configuring", rate_hz="10000")
+        await _assert_clean_exit(ctrl)

@@ -30,6 +30,7 @@ from scdemo.service import run_service
 
 EDGES: Final = frozenset({"req", "dealer", "sub", "http"})
 CONFIG_TIMEOUT: Final = 3.0
+MAX_RATE_HZ: Final = 10_000  # the relay rejects a configure above this
 CONFIG_RETRY: Final = 2.0
 POLL_PERIOD: Final = 1.0
 STATUS_TIMEOUT: Final = 1.0  # per DEALER or HTTP status request
@@ -57,8 +58,8 @@ class Config:
 def load_config(environ: dict[str, str]) -> Config:
     env = Env(environ)
     rate_hz = env.int("SCDEMO_RATE_HZ", 10)
-    if rate_hz < 1:
-        raise ConfigError(f"SCDEMO_RATE_HZ: must be >= 1: {rate_hz}")
+    if not 1 <= rate_hz <= MAX_RATE_HZ:
+        raise ConfigError(f"SCDEMO_RATE_HZ: must be 1..{MAX_RATE_HZ}: {rate_hz}")
     return Config(
         port_base=env.int("SCDEMO_PORT_BASE", 20000),
         relay_host=env.str("SCDEMO_RELAY_HOST", "127.0.0.1"),
@@ -201,7 +202,7 @@ class Controller:
                     await sock.send(request.encode())
                     raw = await sock.recv()
             except TimeoutError:
-                log_event("config_timeout", timeout=CONFIG_TIMEOUT)
+                log_event("config_timeout", reason="timeout", timeout=CONFIG_TIMEOUT)
                 sock = req.reset()  # a REQ waiting for a reply is stuck for good
                 await asyncio.sleep(CONFIG_RETRY)
                 self.reason = "retry"
@@ -214,7 +215,7 @@ class Controller:
                 or not isinstance(boot_id, str)
             ):
                 # Rejected or garbled: the REQ is back in step, so just retry.
-                log_event("config_timeout", error="bad reply")
+                log_event("config_timeout", reason="rejected", error="bad reply")
                 await asyncio.sleep(CONFIG_RETRY)
                 self.reason = "retry"
                 continue
