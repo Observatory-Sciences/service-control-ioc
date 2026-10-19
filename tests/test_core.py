@@ -29,7 +29,7 @@ from fakes import (
 from qd_service_control.cli import serve
 from qd_service_control.config.spec import StackSpec
 from qd_service_control.core import Core
-from qd_service_control.model.types import ElementState, Event
+from qd_service_control.model.types import ElementState, Event, OverallState
 from qd_service_control.observe.journal import JournalLine
 
 SPEC = scdemo_spec()
@@ -607,3 +607,32 @@ async def test_serve_stops_on_sigterm() -> None:
     os.kill(os.getpid(), signal.SIGTERM)
     async with asyncio.timeout(2):
         await task  # returns normally: a graceful stop
+
+
+@pytest.mark.asyncio
+async def test_preflight_alias_exits_2(caplog: pytest.LogCaptureFixture) -> None:
+    systemd = stack()
+    canonical = "scdemo-relay-real.service"
+    systemd.units[canonical] = systemd.units.pop(UNITS["relay"])
+    systemd.aliases[UNITS["relay"]] = canonical
+    h = Harness(systemd, ScriptedScan(), FakeClock(T))
+    with pytest.raises(SystemExit) as exc_info:
+        async with asyncio.timeout(2):
+            await h.core.run()
+    assert exc_info.value.code == 2
+    errors = [r.getMessage() for r in caplog.records if r.levelno == logging.ERROR]
+    alias = f"unit {UNITS['relay']}: is an alias of {canonical}"
+    assert errors == [f"{alias}, configure the canonical name"]
+
+
+@pytest.mark.asyncio
+async def test_session_failing_before_live_shows_units_unknown() -> None:
+    # The bus connects and the preflight passes, but reading the units fails
+    # every time: the units must read unknown, not the default "stopped".
+    systemd = stack()
+    systemd.read_error = PermissionError("GetAll denied")
+    h = Harness(systemd, ScriptedScan(scdemo_table(SPEC, EVERYTHING)), FakeClock(T))
+    async with running(h.core):
+        await h.wait_text("service relay unknown: bus disconnected")
+        assert states(h.core, "service") == {ElementState.UNKNOWN}
+        assert h.core.view().overall is not OverallState.STOPPED

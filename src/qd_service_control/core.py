@@ -30,6 +30,7 @@ from qd_service_control.observe.systemd import (
     DEFAULT_BACKOFF,
     SystemdBus,
     SystemdObserver,
+    SystemdReplyError,
     connect_system_bus,
 )
 
@@ -218,14 +219,30 @@ class Core:
         return bus
 
     async def _preflight(self, bus: SystemdBus) -> bool:
-        """Check every unit's load state (spec Section 9.1); False if any is fatal."""
+        """Check every unit's load state (spec Section 9.1); False if any is fatal.
+
+        An alias is fatal too: systemd answers with the canonical name, and its
+        signals and jobs name that unit, so the alias would never be observed.
+        """
+        rows = await bus.list_units_by_names(self._units)
+        if len(rows) != len(self._units):
+            raise SystemdReplyError(
+                f"ListUnitsByNames returned {len(rows)} rows for {len(self._units)} units"
+            )
         ok = True
-        for name, load, _active, _sub in await bus.list_units_by_names(self._units):
+        for unit, (name, load, _active, _sub) in zip(self._units, rows, strict=True):
             if load in FATAL_LOAD_STATES:
-                log.error("unit %s: load state %s", name, load)
+                log.error("unit %s: load state %s", unit, load)
+                ok = False
+            elif name != unit:
+                log.error(
+                    "unit %s: is an alias of %s, configure the canonical name",
+                    unit,
+                    name,
+                )
                 ok = False
             elif load in WARN_LOAD_STATES:
-                log.warning("unit %s: load state %s", name, load)
+                log.warning("unit %s: load state %s", unit, load)
         return ok
 
     async def _poll_loop(self) -> None:
@@ -282,6 +299,9 @@ class Core:
     def _on_connection(self, up: bool) -> None:
         self._bus_connected = up
         if not up:
+            # Also after a session that failed before going live: the units
+            # are unknown, and the first update must not wait for the bus.
+            self._bus_tried = True
             self._snapshots.clear()  # re-read in full on the next connection
         self._unit_changed()
 
