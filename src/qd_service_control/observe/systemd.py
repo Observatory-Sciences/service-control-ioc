@@ -29,8 +29,15 @@ PROPERTIES_IFACE: Final = "org.freedesktop.DBus.Properties"
 UNIT_PATH_PREFIX: Final = "/org/freedesktop/systemd1/unit/"
 IDLE_JOB: Final = (0, "/")
 DEFAULT_BACKOFF: Final = (0.5, 1.0, 2.0, 5.0)
+MAX_REREADS: Final = 5  # reads of a unit that changes during each read
 
 PropertiesCallback = Callable[[str, dict[str, object]], None]
+
+
+class SystemdReplyError(Exception):
+    """systemd answered in a shape the observer cannot use."""
+
+
 JobNewCallback = Callable[[int, str, str], None]  # id, job path, unit
 JobRemovedCallback = Callable[[int, str, str, str], None]  # ... and result
 
@@ -179,6 +186,8 @@ class SystemdObserver:
         self._keys: dict[str, tuple[object, ...]] = {}
         self._emitted: dict[str, UnitSnapshot] = {}
         self._live = False
+        # unit -> signals seen while its read is in flight (only during reads)
+        self._in_flight: dict[str, list[dict[str, object]]] = {}
         # Survives reconnects.
         self._after: dict[str, tuple[str, ...]] = {}
 
@@ -203,6 +212,10 @@ class SystemdObserver:
                 finally:
                     self._live = False
                     bus.disconnect()
+                if not self._connected:
+                    # It never went live: still tell the owner, so the units
+                    # read as unknown instead of never being evaluated.
+                    self._on_connection(False)
             if self._connected:
                 self._connected = False
                 self._on_connection(False)
@@ -239,18 +252,44 @@ class SystemdObserver:
         return True
 
     async def _read_all(self, bus: SystemdBus) -> None:
-        rows = await bus.list_units_by_names(self._units)
-        for name, load, active, sub in rows:
-            if load == "not-found":
-                props: dict[str, object] = {
-                    "LoadState": load,
-                    "ActiveState": active,
-                    "SubState": sub,
-                }
-            else:
-                props = await bus.get_unit_properties(name)
-            self._props[name] = props
-            self._after[name] = _after(props)
+        """Read every unit. Rows are paired with the configured names.
+
+        A signal for a unit (PropertiesChanged, JobNew, JobRemoved) that
+        arrives while its read is in flight may be newer than the reply, so
+        that unit is read again; a unit that keeps changing gets the signals
+        seen during its last read applied on top of the reply.
+        """
+        self._in_flight = {unit: [] for unit in self._units}
+        try:
+            rows = await bus.list_units_by_names(self._units)
+            if len(rows) != len(self._units):
+                raise SystemdReplyError(
+                    f"ListUnitsByNames returned {len(rows)} rows"
+                    f" for {len(self._units)} units"
+                )
+            for unit, (_name, load, active, sub) in zip(self._units, rows, strict=True):
+                if load == "not-found":
+                    props: dict[str, object] = {
+                        "LoadState": load,
+                        "ActiveState": active,
+                        "SubState": sub,
+                    }
+                else:
+                    props = await self._read_unit(bus, unit)
+                self._props[unit] = props
+                self._after[unit] = _after(props)
+        finally:
+            self._in_flight = {}
+
+    async def _read_unit(self, bus: SystemdBus, unit: str) -> dict[str, object]:
+        for _ in range(MAX_REREADS):
+            self._in_flight[unit] = []
+            props = await bus.get_unit_properties(unit)
+            if not self._in_flight[unit]:
+                return props
+        for changed in self._in_flight[unit]:  # still busy: newest signals win
+            props.update(changed)
+        return props
 
     async def _reread_on_reload(
         self, bus: SystemdBus, reload_done: asyncio.Event
@@ -265,9 +304,16 @@ class SystemdObserver:
                 ):
                     self._emit(unit)
 
+    def _note_in_flight(self, unit: str, changed: Mapping[str, object]) -> None:
+        """Remember a signal that arrived while ``unit``'s read was in flight."""
+        pending = self._in_flight.get(unit)
+        if pending is not None:
+            pending.append(dict(changed))
+
     def _properties_changed(
         self, unit: str, interface: str, changed: Mapping[str, object]
     ) -> None:
+        self._note_in_flight(unit, changed)
         props = self._props.get(unit)
         if props is None:  # not read yet on this connection; the read wins
             return
@@ -282,6 +328,7 @@ class SystemdObserver:
             self._emit(unit)
 
     def _job_new(self, job_id: int, job_path: str, unit: str) -> None:
+        self._note_in_flight(unit, {"Job": (job_id, job_path)})
         props = self._props.get(unit)
         if props is None:  # not ours, or not read yet (the read has the job)
             return
@@ -290,6 +337,7 @@ class SystemdObserver:
 
     def _job_removed(self, job_id: int, job_path: str, unit: str, result: str) -> None:
         del job_id, result  # only the path identifies the unit's current job
+        self._note_in_flight(unit, {})  # re-read: the reply may predate it
         props = self._props.get(unit)
         if props is None or _job(props)[1:] != (job_path,):
             return  # not ours, or the unit already has another job (or none)

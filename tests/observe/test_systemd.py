@@ -292,3 +292,125 @@ async def test_connect_failure_backs_off_and_retries(recorder: Recorder) -> None
         assert recorder.connection == [True]
     finally:
         await stop(task)
+
+
+# -- signals during reads, aliases, failed sessions ----------------------------
+
+STOPPED = {"ActiveState": "inactive", "SubState": "dead", "MainPID": 0}
+
+
+async def wait_event(event: asyncio.Event) -> None:
+    async with asyncio.timeout(2):
+        await event.wait()
+
+
+def last(recorder: Recorder, unit: str) -> UnitSnapshot:
+    return [s for s in recorder.snapshots if s.name == unit][-1]
+
+
+@pytest.mark.asyncio
+async def test_signal_during_initial_read_is_not_lost(
+    systemd: FakeSystemd, recorder: Recorder
+) -> None:
+    release = systemd.hold_reply["a.service"] = asyncio.Event()
+    task = asyncio.create_task(make_observer(systemd, recorder).run())
+    try:
+        await wait_event(systemd.holding)  # GetAll(a) answered "active", in flight
+        systemd.bus.fire_properties_changed("a.service", UNIT_IFACE, STOPPED)
+        release.set()
+        await recorder.wait_for(lambda: recorder.connection == [True])
+        assert last(recorder, "a.service").active_state == "inactive"
+    finally:
+        await stop(task)
+
+
+@pytest.mark.asyncio
+async def test_signal_during_reload_reread_is_not_lost(
+    systemd: FakeSystemd, recorder: Recorder
+) -> None:
+    task = await started(make_observer(systemd, recorder), recorder)
+    try:
+        release = systemd.hold_reply["a.service"] = asyncio.Event()
+        systemd.bus.fire_reloading(False)
+        await wait_event(systemd.holding)
+        systemd.bus.fire_properties_changed("a.service", UNIT_IFACE, STOPPED)
+        assert last(recorder, "a.service").active_state == "inactive"
+        reads = len(systemd.bus.reads)
+        release.set()
+        for _ in range(20):  # let the re-reads finish (no snapshot may follow)
+            await asyncio.sleep(0)
+        assert len(systemd.bus.reads) > reads  # a re-read after the signal
+        assert last(recorder, "a.service").active_state == "inactive"
+        assert [s.active_state for s in recorder.snapshots if s.name == "a.service"][
+            -2:
+        ] == ["active", "inactive"]  # never back to the stale "active"
+    finally:
+        await stop(task)
+
+
+@pytest.mark.asyncio
+async def test_job_new_during_read_window_is_not_lost(
+    systemd: FakeSystemd, recorder: Recorder
+) -> None:
+    release = systemd.hold_reply["a.service"] = asyncio.Event()
+    task = asyncio.create_task(make_observer(systemd, recorder).run())
+    try:
+        await wait_event(systemd.holding)
+        systemd.bus.fire_job_new(5, "/org/freedesktop/systemd1/job/5", "a.service")
+        release.set()
+        await recorder.wait_for(lambda: recorder.connection == [True])
+        assert last(recorder, "a.service").job_pending
+    finally:
+        await stop(task)
+
+
+@pytest.mark.asyncio
+async def test_reloading_before_live_rereads(
+    systemd: FakeSystemd, recorder: Recorder
+) -> None:
+    release = systemd.hold_reply["b.service"] = asyncio.Event()
+    observer = make_observer(systemd, recorder)
+    task = asyncio.create_task(observer.run())
+    try:
+        await wait_event(systemd.holding)
+        systemd.units["b.service"]["After"] = []  # changed by a daemon-reload
+        systemd.bus.fire_reloading(True)
+        systemd.bus.fire_reloading(False)
+        release.set()
+        await recorder.wait_for(
+            lambda: any(
+                s.name == "b.service" and s.after == () for s in recorder.snapshots
+            )
+        )
+        assert observer.after_graph()["b.service"] == ()
+    finally:
+        await stop(task)
+
+
+@pytest.mark.asyncio
+async def test_alias_rows_are_paired_with_configured_names(
+    recorder: Recorder,
+) -> None:
+    systemd = FakeSystemd({"a.service": unit_props(), "b.service": unit_props()})
+    systemd.aliases["alias.service"] = "a.service"
+    observer = make_observer(systemd, recorder, ("alias.service", "b.service"))
+    task = await started(observer, recorder)
+    try:
+        assert [s.name for s in recorder.snapshots] == ["alias.service", "b.service"]
+    finally:
+        await stop(task)
+
+
+@pytest.mark.asyncio
+async def test_short_reply_fails_the_session_before_live(
+    systemd: FakeSystemd, recorder: Recorder, caplog: pytest.LogCaptureFixture
+) -> None:
+    systemd.short_reply = True
+    task = asyncio.create_task(make_observer(systemd, recorder).run())
+    try:
+        await recorder.wait_for(lambda: False in recorder.connection)
+        assert True not in recorder.connection
+        assert recorder.snapshots == []
+        assert "ListUnitsByNames returned 1 rows for 2 units" in caplog.text
+    finally:
+        await stop(task)

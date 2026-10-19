@@ -64,6 +64,13 @@ class FakeSystemd:
         self.attempts = 0
         self.reads_open = asyncio.Event()  # clear it to hold GetAll reads
         self.reads_open.set()
+        # unit -> release: that unit's next GetAll answers at once but its
+        # reply is held until released (a signal can arrive in between).
+        self.hold_reply: dict[str, asyncio.Event] = {}
+        self.holding = asyncio.Event()  # set while a held reply waits
+        self.aliases: dict[str, str] = {}  # alias -> canonical unit name
+        self.short_reply = False  # ListUnitsByNames drops its last row
+        self.read_error: Exception | None = None  # GetAll raises this
 
     async def connect(self) -> "FakeBus":
         self.attempts += 1
@@ -102,7 +109,8 @@ class FakeBus:
         self, names: Sequence[str]
     ) -> list[tuple[str, str, str, str]]:
         rows = []
-        for name in names:
+        for requested in names:
+            name = self.systemd.aliases.get(requested, requested)
             props = self.systemd.units.get(name)
             if props is None:
                 rows.append((name, "not-found", "inactive", "dead"))
@@ -115,12 +123,20 @@ class FakeBus:
                         str(props["SubState"]),
                     )
                 )
-        return rows
+        return rows[:-1] if self.systemd.short_reply else rows
 
     async def get_unit_properties(self, unit: str) -> dict[str, object]:
         await self.systemd.reads_open.wait()
         self.reads.append(unit)
-        return dict(self.systemd.units[unit])
+        if self.systemd.read_error is not None:
+            raise self.systemd.read_error
+        answer = dict(self.systemd.units[self.systemd.aliases.get(unit, unit)])
+        release = self.systemd.hold_reply.pop(unit, None)
+        if release is not None:
+            self.systemd.holding.set()
+            await release.wait()
+            self.systemd.holding.clear()
+        return answer
 
     def on_properties_changed(
         self, unit: str, cb: Callable[[str, dict[str, object]], None]
