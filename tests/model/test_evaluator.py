@@ -5,6 +5,8 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import replace
 from pathlib import Path
 
+import pytest
+
 from qd_service_control.config.load import load_config
 from qd_service_control.config.spec import FileSpec, StackSpec
 from qd_service_control.model.deps import DependencyGraph
@@ -511,6 +513,55 @@ def test_manual_stop_waits_during_its_job_then_faults() -> None:
     assert codes(ev)["sink@2"] is FindingCode.UNIT_STOPPED
     assert st(ev, "sink@2.stats") is fault
     assert ev.view().overall is OverallState.FAULT
+
+
+SINK2_STOPPED_UP = without(*SINK2_GONE)
+
+
+def sink2_stopped(now: float, controller: UnitSnapshot) -> Inputs:
+    """sink@2 stopped (its job done) while the controller has a job pending."""
+    return scenario(
+        now, up=SINK2_STOPPED_UP, units={"sink@2": "stopped", "controller": controller}
+    )
+
+
+def assert_sink2_faults(ev: Evaluator) -> None:
+    assert codes(ev)["sink@2"] is FindingCode.UNIT_STOPPED
+    assert st(ev, "sink@2.stats") is fault
+    assert st(ev, "relay -> sink@2.stats") is fault
+    assert ev.view().overall is OverallState.FAULT
+
+
+@pytest.mark.parametrize(
+    "controller",
+    [snap("controller", "queued"), snap("controller", job_pending=True)],
+    ids=["queued", "active-with-job"],
+)
+def test_stuck_job_stops_masking_after_its_timeout(controller: UnitSnapshot) -> None:
+    timeout = SPEC.services["controller"].timeout
+    ev = running()
+    events = ev.update(sink2_stopped(T + 50, controller))
+    events += ev.update(sink2_stopped(T + 50 + timeout - 1, controller))
+    assert no_faults(events)  # within the bound: still a transition
+    assert ev.view().overall is OverallState.STARTING
+    ev.update(sink2_stopped(T + 50 + timeout + 1, controller))
+    assert_sink2_faults(ev)
+    ev.update(sink2_stopped(T + 5000, controller))
+    assert_sink2_faults(ev)
+
+
+def test_job_timer_resets_when_the_job_clears() -> None:
+    timeout = SPEC.services["controller"].timeout
+    busy = snap("controller", job_pending=True)
+    ev = running()
+    events = ev.update(sink2_stopped(T + 50, busy))
+    events += ev.update(sink2_stopped(T + 70, snap("controller")))  # job done
+    assert codes(ev)["sink@2"] is FindingCode.UNIT_STOPPED  # no transition now
+    events = ev.update(sink2_stopped(T + 75, busy))  # a new job: timer restarts
+    events += ev.update(sink2_stopped(T + 75 + timeout - 1, busy))
+    assert ev.view().findings == ()  # the new job masks again, within its bound
+    ev.update(sink2_stopped(T + 75 + timeout + 1, busy))
+    assert_sink2_faults(ev)
 
 
 def test_manual_stop_of_one_unit_is_fault() -> None:

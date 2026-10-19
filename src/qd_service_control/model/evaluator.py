@@ -147,38 +147,6 @@ def _edge_missing_detail(edge: EdgeSpec, fact: EdgeFact) -> str:
     return "no sender socket"
 
 
-def _in_transition(inputs: Inputs) -> bool:
-    """Some configured or group unit has a job pending: the stack is moving.
-
-    systemd runs a whole-stack start or stop as jobs on many units at once,
-    and announces them one unit at a time. While any job is in flight, units
-    that are already stopped and elements that went away with their owner
-    are expected, not faults (spec Section 5.1 applies once the jobs end).
-    """
-    return inputs.bus_connected and any(s.job_pending for s in inputs.units.values())
-
-
-def _settling(owners: Iterable[str], inputs: Inputs) -> bool:
-    """During a transition, an owner is going down (or is down) under a job.
-
-    That is an owner that is deactivating, inactive, or still active with a
-    job queued (a stop or restart). An activating owner is not settling, so
-    rule 1 still catches a dependent that is up before it during a start.
-    """
-    if not _in_transition(inputs):
-        return False
-    for unit in owners:
-        snap = inputs.units.get(unit)
-        if snap is None:
-            continue
-        state = snap.active_state
-        if state in ("deactivating", "inactive") or (
-            state == "active" and snap.job_pending
-        ):
-            return True
-    return False
-
-
 def _look(finding: Finding) -> str:
     """``<message>, look at <units> (journalctl ...)`` for FAULT and GATE lines."""
     units = ", ".join(finding.units)
@@ -215,6 +183,7 @@ class Evaluator:
         self._restarts: dict[str, int] = {}  # unit -> last NRestarts
         self._rises: dict[str, list[float]] = {}  # unit -> times NRestarts rose
         self._activating_since: dict[str, float] = {}
+        self._job_since: dict[str, float] = {}  # unit -> first seen with this job
         self._was_ready: dict[str, tuple[str, ...]] = {}  # id -> invocation key
         self._meta = self._build_meta(spec)
         self._gate = GateTracker(spec)
@@ -285,6 +254,10 @@ class Evaluator:
         if last is not None and snap.n_restarts > last:
             self._rises.setdefault(unit, []).extend([now] * (snap.n_restarts - last))
         self._restarts[unit] = snap.n_restarts
+        if snap.job_pending:
+            self._job_since.setdefault(unit, now)
+        else:
+            self._job_since.pop(unit, None)
         if snap.active_state == "activating" and snap.sub_state != "auto-restart":
             self._activating_since.setdefault(unit, now)
         else:
@@ -311,6 +284,55 @@ class Evaluator:
     def _invocation_key(self, owners: Iterable[str]) -> tuple[str, ...]:
         return tuple(self._invocations.get(unit, "") for unit in owners)
 
+    # -- transitions ---------------------------------------------------------
+
+    def _job_timeout(self, unit: str) -> float:
+        svc = self._spec.service_by_unit(unit)
+        return svc.timeout if svc is not None else self._spec.defaults.timeout
+
+    def _live_job(self, unit: str, inputs: Inputs) -> bool:
+        """``unit`` has a job pending, for no longer than its timeout."""
+        since = self._job_since.get(unit)
+        snap = inputs.units.get(unit)
+        if since is None or snap is None or not snap.job_pending:
+            return False
+        return inputs.now - since <= self._job_timeout(unit)
+
+    def _in_transition(self, inputs: Inputs) -> bool:
+        """Some configured or group unit has a live job: the stack is moving.
+
+        systemd runs a whole-stack start or stop as jobs on many units at once,
+        and announces them one unit at a time. While a job is in flight, units
+        that are already stopped and elements that went away with their owner
+        are expected, not faults. The exemption is bounded: a job pending for
+        longer than its unit's timeout no longer counts, and spec Section 5.1
+        applies as usual (so a stuck job cannot hide a real stop forever).
+        """
+        return inputs.bus_connected and any(
+            self._live_job(unit, inputs) for unit in inputs.units
+        )
+
+    def _settling(self, owners: Iterable[str], inputs: Inputs) -> bool:
+        """During a transition, an owner is going down (or is down) under a job.
+
+        That is an owner that is deactivating, inactive, or still active with a
+        live job queued (a stop or restart). An activating owner is not
+        settling, so rule 1 still catches a dependent that is up before it
+        during a start.
+        """
+        if not self._in_transition(inputs):
+            return False
+        for unit in owners:
+            snap = inputs.units.get(unit)
+            if snap is None:
+                continue
+            state = snap.active_state
+            if state in ("deactivating", "inactive") or (
+                state == "active" and self._live_job(unit, inputs)
+            ):
+                return True
+        return False
+
     # -- rules ---------------------------------------------------------------
 
     def _evaluate(self, inputs: Inputs) -> dict[str, _Result]:
@@ -321,7 +343,7 @@ class Evaluator:
             # The next start is a fresh one: queued units keep their old
             # invocation ids, which must not count as "was ready" (rule 3).
             self._was_ready.clear()
-        elif not _in_transition(inputs):
+        elif not self._in_transition(inputs):
             services = {
                 sid: self._unit_stopped(spec.services[sid], r)
                 for sid, r in services.items()
@@ -437,7 +459,7 @@ class Evaluator:
         if stack_stopped:
             return _STOPPED, ""
         owners = self._owner_units(eid)
-        if _settling(owners, inputs):
+        if self._settling(owners, inputs):
             return _WAITING, ""  # rules 1 and 3 wait for the jobs to end
         if self._was_ready.get(eid) == self._invocation_key(owners):
             return _FAULT, "dropped after being ready"
