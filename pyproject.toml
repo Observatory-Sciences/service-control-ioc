@@ -1,0 +1,56 @@
+[project]
+name = "qd-service-control"
+version = "0.1.0"
+description = "Add your description here"
+authors = [
+    { name = "Ulrik Pedersen", email = "ukp@observatorysciences.co.uk" }
+]
+requires-python = ">=3.11"
+dependencies = []
+
+[project.scripts]
+qd-service-control = "qd_service_control:main"
+
+[build-system]
+requires = ["uv_build>=0.13.1,<0.14.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "ruff==0.17.1",
+    "ty==0.0.89",
+]
+
+[tool.ruff]
+# target-version comes from requires-python.
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+# Ruff's default set already covers most asyncio pitfalls (ASYNC1xx/2xx
+# blocking calls, BLE001/E722 swallowed exceptions incl. CancelledError,
+# PLE1142, B023). A project ruff config replaces ~/.config/ruff/ruff.toml,
+# so its extras are repeated here.
+extend-select = [
+  "RUF006",   # asyncio-dangling-task: keep a reference to create_task() results
+  "ASYNC109", # async function with a timeout parameter: use asyncio.timeout()
+  "ASYNC110", # busy-wait sleep loop: use an asyncio.Event
+  "TRY400",   # logging.error() in except: use logging.exception()
+  "PGH003",   # blanket "type: ignore" without rule codes
+  "B904",     # raise ... from err inside except
+  "ANN",      # annotations, so ty can check call sites
+  "PT",       # pytest style
+  "TID252",   # absolute imports only
+]
+ignore = [
+  "ANN401", # Any is sometimes the honest type (softioc/aioca values)
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["ANN"]
+
+[tool.ty.environment]
+# Developed on macOS, deployed on EL9: check against Linux stubs.
+python-platform = "linux"
+
+[tool.ty.terminal]
+error-on-warning = true
