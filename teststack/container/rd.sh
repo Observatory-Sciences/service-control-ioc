@@ -56,7 +56,8 @@ wait_ready() {
             "$DOCKER" logs --tail 50 "$NAME" >&2 || true
             return 1
         fi
-        # --wait blocks until boot finishes; bound each attempt by the remaining time.
+        # --wait blocks until boot finishes; each attempt is capped at 10 s by timeout(1),
+        # and the loop re-checks the overall deadline between attempts.
         state=$("$DOCKER" exec "$NAME" timeout 10 systemctl is-system-running --wait 2>/dev/null || true)
         case "$state" in
             running)
@@ -87,12 +88,14 @@ exec_script() {
 
 cmd_shell() {
     is_running || { echo "ERROR: $NAME is not running; run '$0 up' first" >&2; exit 1; }
-    local tty=()
-    [ -t 0 ] && tty=(-it)
+    # Plain string flag, not an array: empty arrays break under set -u on bash 3.2.
+    # -i keeps piped stdin flowing; -t only when both ends are a terminal.
+    local ti=-i
+    if [ -t 0 ] && [ -t 1 ]; then ti=-it; fi
     if [ "$#" -eq 0 ]; then
-        "$DOCKER" exec "${tty[@]}" "$NAME" bash -l
+        "$DOCKER" exec $ti "$NAME" bash -l
     else
-        "$DOCKER" exec "${tty[@]}" "$NAME" bash "$@"
+        "$DOCKER" exec $ti "$NAME" bash "$@"
     fi
 }
 
