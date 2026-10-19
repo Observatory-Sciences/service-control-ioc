@@ -212,3 +212,35 @@ async def test_cancel_terminates_child(tmp_path: Path) -> None:
     async with asyncio.timeout(5):
         with pytest.raises(asyncio.CancelledError):
             await task
+
+
+@pytest.mark.asyncio
+async def test_spawn_failure_logs_once_and_retries(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    tail = JournalTail(
+        ["a.service"],
+        lambda _line: None,
+        journalctl=[str(tmp_path / "nonexistent-journalctl")],
+        backoff=(0.05,),
+    )
+    attempts = 0
+    original = tail._command
+
+    def counting() -> list[str]:
+        nonlocal attempts
+        attempts += 1
+        return original()
+
+    tail._command = counting  # ty: ignore[invalid-assignment] - test spy
+    caplog.set_level(logging.DEBUG, logger="qd_service_control.observe.journal")
+    task = asyncio.create_task(tail.run())
+    await asyncio.sleep(0.5)
+    assert not task.done()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert attempts >= 2
+    errors = [r for r in caplog.records if r.levelno >= logging.ERROR]
+    assert len(errors) == 1
+    assert "failed to start" in errors[0].getMessage()

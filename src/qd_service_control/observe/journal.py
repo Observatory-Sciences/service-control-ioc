@@ -175,13 +175,16 @@ class JournalTail:
 
     async def _run_once(self) -> tuple[bool, str]:
         """Run one journalctl to its end; return (got entries, failure message)."""
-        proc = await asyncio.create_subprocess_exec(
-            *self._command(),
-            stdin=asyncio.subprocess.DEVNULL,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            limit=READER_LIMIT,
-        )
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *self._command(),
+                stdin=asyncio.subprocess.DEVNULL,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                limit=READER_LIMIT,
+            )
+        except OSError as exc:  # missing from PATH, not executable, out of fds
+            return False, f"journal follower failed to start: {exc}"
         assert proc.stdout is not None
         assert proc.stderr is not None
         stderr_task = asyncio.create_task(proc.stderr.read())
