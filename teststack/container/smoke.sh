@@ -5,9 +5,12 @@
 # to DEADLINE seconds for all units active, all listeners/binds present and
 # all edges established. Prints PASS <style> or FAIL <style>: <missing>.
 # Exits 1 if any style failed. All gating drop-ins are cleared at the end.
+# Overrides (debugging and self-tests): SMOKE_STYLES (subset of the four
+# styles), SMOKE_DEADLINE (seconds, default 30, counted from before the
+# restart), SMOKE_DROPIN (path to scdemo-dropin).
 set -euo pipefail
 
-DROPIN=/opt/scdemo/venv/bin/scdemo-dropin
+DROPIN=${SMOKE_DROPIN:-/opt/scdemo/venv/bin/scdemo-dropin}
 DEADLINE=${SMOKE_DEADLINE:-30}
 STYLES=${SMOKE_STYLES:-"none sleep waitport notify"}
 
@@ -18,13 +21,20 @@ UDP_BIND="20011 20012 20105"
 TCP_ESTAB="20021 20022 20100 20101 20102 20103 20104"
 HW=127.0.0.2:20200
 
+# EXIT trap: clear every unit even if one fails, always reload, and exit
+# non-zero if cleanup failed (keeping the script's own failure status).
 # shellcheck disable=SC2329  # invoked by the EXIT trap
 clear_all() {
-    local unit
+    local status=$? rc=0 unit
     for unit in $GATED; do
-        "$DROPIN" --no-reload clear "$unit"
+        "$DROPIN" --no-reload clear "$unit" || rc=1
     done
-    systemctl daemon-reload
+    systemctl daemon-reload || rc=1
+    if [ "$rc" -ne 0 ]; then
+        echo "smoke.sh: could not clear all gating drop-ins" >&2
+        [ "$status" -ne 0 ] || status=1
+    fi
+    exit "$status"
 }
 
 # Print what is missing (space-separated), or nothing when everything is up.
@@ -49,32 +59,48 @@ missing() {
 }
 
 run_style() {
-    local style=$1 ctl_style=$1 start rc=0 miss
+    local style=$1 ctl_style=$1 start elapsed rc=0 miss
     [ "$style" = waitport ] && ctl_style=notify
-    "$DROPIN" --no-reload gating scdemo-sink@.service "$style"
-    "$DROPIN" --no-reload gating scdemo-relay.service "$style"
-    "$DROPIN" --no-reload gating scdemo-controller.service "$ctl_style"
-    systemctl daemon-reload
+    # errexit does not apply here (run_style is called in an || list), so
+    # every setup step is checked explicitly.
+    if ! { "$DROPIN" --no-reload gating scdemo-sink@.service "$style" &&
+        "$DROPIN" --no-reload gating scdemo-relay.service "$style" &&
+        "$DROPIN" --no-reload gating scdemo-controller.service "$ctl_style" &&
+        systemctl daemon-reload; }; then
+        echo "FAIL $style: could not set drop-ins"
+        return 1
+    fi
     systemctl reset-failed 'scdemo-*' 2>/dev/null || true
 
+    # The restart blocks while gating runs, so the deadline is checked on
+    # every pass, including the first one after the restart returns.
     start=$SECONDS
     systemctl restart scdemo-all.service || rc=$?
     while :; do
+        elapsed=$((SECONDS - start))
+        if (( elapsed > DEADLINE )); then
+            miss=$(missing)
+            [ "$rc" -eq 0 ] || miss="restart exit $rc; $miss"
+            echo "FAIL $style: stack took ${elapsed}s, over the ${DEADLINE}s deadline${miss:+; missing: $miss}"
+            return 1
+        fi
         miss=$(missing)
         if [ -z "$miss" ] && [ "$rc" -eq 0 ]; then
-            echo "# $style: all up after $((SECONDS - start))s"
+            echo "# $style: all up after ${elapsed}s"
             echo "PASS $style"
             return 0
-        fi
-        if (( SECONDS - start >= DEADLINE )); then
-            [ "$rc" -eq 0 ] || miss="restart exit $rc; $miss"
-            echo "FAIL $style: $miss (after ${DEADLINE}s)"
-            return 1
         fi
         sleep 0.5
     done
 }
 
+for style in $STYLES; do
+    case "$style" in
+        none | sleep | waitport | notify) ;;
+        *) echo "smoke.sh: unknown style '$style' (allowed: none sleep waitport notify)" >&2; exit 2 ;;
+    esac
+done
+[[ "$DEADLINE" =~ ^[0-9]+$ ]] || { echo "smoke.sh: SMOKE_DEADLINE must be whole seconds, got '$DEADLINE'" >&2; exit 2; }
 [ -x "$DROPIN" ] || { echo "smoke.sh: $DROPIN missing; run install.sh first" >&2; exit 1; }
 trap clear_all EXIT
 
