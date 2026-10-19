@@ -109,34 +109,12 @@ detector is attached.
 
 ## 5. Architecture
 
-```
-   YAML config (services, listeners, edges,        systemd unit dependencies
-   readiness checks, groups)                       (After=/Requires=/Wants=, via D-Bus)
-                 │                                              │
-                 └──────────────────────┬───────────────────────┘
-                                        ▼
-┌───────────────────────────────── core ──────────────────────────────────┐
-│                                                                         │
-│  observers ─────────────▶ state model ──────▶ event stream ────┐        │
-│   • unit state: systemd    (graph + live       (timestamped    │        │
-│     D-Bus signals           state per           changes)       │        │
-│   • sockets → processes    element)                            │        │
-│     → units: D-Bus where      │                                │        │
-│     possible, else /proc,     ▼                                │        │
-│     else sock_diag         diagnoser (fault → service/edge     │        │
-│   • file-exists checks       → likely side → journal ref)      │        │
-│                                                                │        │
-│  control: start/stop/restart unit or group as one systemd job  │        │
-└───────────────────────────────▲────────────────────────────────┼────────┘
-                                │                                │
-                  ┌─────────────┴────────────────────────────────▼───────┐
-                  │  pythonSoftIOC service                               │
-                  │   • PVs: compat (odinprocservcontrol/procServControl)│
-                  │     + services, listeners, edges, stack-ready        │
-                  │   • control PVs → core control                       │
-                  │   • Python logging of every event → stdout/journald  │
-                  └──────────────────────────────────────────────────────┘
-```
+![Architecture: kernel and systemd feed the core; the core feeds the IOC's PVs and logging](images/architecture.svg)
+
+The source is
+[`images/architecture.excalidraw`](images/architecture.excalidraw). To edit
+the diagram, open it in [Excalidraw](https://excalidraw.com), then re-export
+the SVG with the font embedded.
 
 Key points:
 
