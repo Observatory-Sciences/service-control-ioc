@@ -269,7 +269,7 @@ class _Expander:
             file_ids = [
                 fid
                 for index, fraw in enumerate(raw.files)
-                if (fid := self._file(sid, n, fraw, f"{base}.files[{index}]"))
+                if (fid := self._file(sid, n, index, fraw, f"{base}.files[{index}]"))
             ]
             unit = self._text(f"{base}.unit", raw.unit, n)
             if unit is None:
@@ -318,13 +318,15 @@ class _Expander:
                 base,
             )
 
-    def _file(self, owner: str, n: int | None, raw: FileRaw, path: str) -> str | None:
+    def _file(
+        self, owner: str, n: int | None, index: int, raw: FileRaw, path: str
+    ) -> str | None:
         if not self._keep(raw.when, f"{path}.when"):
             return None
         text = self._text(f"{path}.path", raw.path, n)
         if text is None:
             return None
-        fid = f"{owner}:{text}"
+        fid = f"{owner}:file{index}"
         spec = FileSpec(
             id=fid,
             owner=owner,

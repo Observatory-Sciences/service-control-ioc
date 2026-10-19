@@ -235,8 +235,8 @@ services:
     assert spec.listeners["svc.pre"].timeout == 12
     assert spec.listeners["svc.post"].timeout is None
     assert spec.listeners["svc.explicit"].timeout == 4
-    assert spec.files["svc:/run/a.pid"].timeout == 12
-    assert spec.files["svc:/run/b.pid"].timeout is None
+    assert spec.files["svc:file0"].timeout == 12
+    assert spec.files["svc:file1"].timeout is None
 
 
 def test_unknown_defaults_field_is_error():
@@ -248,20 +248,24 @@ def test_files_interpolate_and_default_non_empty():
         HEAD
         + """
 vars: {base: 7}
+flags: {disabled: false}
 services:
   svc:
     unit: "s{n}.service"
     instances: [1, 2]
     files:
+      - {path: "/run/skipped{n}", when: disabled}
       - {path: "/run/s{n}-{base}.pid"}
       - {path: "/run/log{n}", non_empty: true}
 """
     )
     spec = load_config_text(text)
-    assert spec.files["svc@2:/run/s2-7.pid"].non_empty is False
-    assert spec.files["svc@2:/run/log2"].non_empty is True
-    assert spec.services["svc@1"].files == ("svc@1:/run/s1-7.pid", "svc@1:/run/log1")
-    assert spec.files["svc@1:/run/s1-7.pid"].owner == "svc@1"
+    assert spec.files["svc@2:file1"].path == "/run/s2-7.pid"
+    assert spec.files["svc@2:file1"].non_empty is False
+    assert spec.files["svc@2:file2"].path == "/run/log2"
+    assert spec.files["svc@2:file2"].non_empty is True
+    assert spec.services["svc@1"].files == ("svc@1:file1", "svc@1:file2")
+    assert spec.files["svc@1:file1"].owner == "svc@1"
 
 
 def test_service_required_defaults_true():
