@@ -147,6 +147,38 @@ def _edge_missing_detail(edge: EdgeSpec, fact: EdgeFact) -> str:
     return "no sender socket"
 
 
+def _in_transition(inputs: Inputs) -> bool:
+    """Some configured or group unit has a job pending: the stack is moving.
+
+    systemd runs a whole-stack start or stop as jobs on many units at once,
+    and announces them one unit at a time. While any job is in flight, units
+    that are already stopped and elements that went away with their owner
+    are expected, not faults (spec Section 5.1 applies once the jobs end).
+    """
+    return inputs.bus_connected and any(s.job_pending for s in inputs.units.values())
+
+
+def _settling(owners: Iterable[str], inputs: Inputs) -> bool:
+    """During a transition, an owner is going down (or is down) under a job.
+
+    That is an owner that is deactivating, inactive, or still active with a
+    job queued (a stop or restart). An activating owner is not settling, so
+    rule 1 still catches a dependent that is up before it during a start.
+    """
+    if not _in_transition(inputs):
+        return False
+    for unit in owners:
+        snap = inputs.units.get(unit)
+        if snap is None:
+            continue
+        state = snap.active_state
+        if state in ("deactivating", "inactive") or (
+            state == "active" and snap.job_pending
+        ):
+            return True
+    return False
+
+
 def _look(finding: Finding) -> str:
     """``<message>, look at <units> (journalctl ...)`` for FAULT and GATE lines."""
     units = ", ".join(finding.units)
@@ -289,7 +321,7 @@ class Evaluator:
             # The next start is a fresh one: queued units keep their old
             # invocation ids, which must not count as "was ready" (rule 3).
             self._was_ready.clear()
-        else:
+        elif not _in_transition(inputs):
             services = {
                 sid: self._unit_stopped(spec.services[sid], r)
                 for sid, r in services.items()
@@ -405,6 +437,8 @@ class Evaluator:
         if stack_stopped:
             return _STOPPED, ""
         owners = self._owner_units(eid)
+        if _settling(owners, inputs):
+            return _WAITING, ""  # rules 1 and 3 wait for the jobs to end
         if self._was_ready.get(eid) == self._invocation_key(owners):
             return _FAULT, "dropped after being ready"
         phase = self._meta[eid].phase

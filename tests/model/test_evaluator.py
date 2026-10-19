@@ -412,17 +412,105 @@ def test_whole_stack_stop_is_grey() -> None:
     assert "stack stopped (+200.0 s)" in texts(events)
 
 
-def test_whole_stack_stop_in_progress_is_a_transient_fault() -> None:
-    # Units stop in reverse order. While the controller is already inactive
-    # and the rest still runs, the spec's rule applies: a unit stopped while
-    # the rest runs is a fault. It clears once everything is inactive.
+def no_faults(events: Sequence[Event]) -> bool:
+    return not [e for e in events if e.kind in ("finding", "gate") or e.new == "fault"]
+
+
+def stopping(sid: str) -> UnitSnapshot:
+    """Still running, with its stop job queued."""
+    return snap(sid, job_pending=True)
+
+
+def test_orderly_whole_stack_stop_has_no_faults() -> None:
+    # systemctl stop scdemo-all: every unit gets a stop job, then they stop in
+    # reverse After= order. The stack is in transition until the last job ends.
     ev = running()
-    ev.update(scenario(T + 200, up=EVERYTHING, units={"controller": "stopped"}))
-    assert codes(ev)["controller"] is FindingCode.UNIT_STOPPED
-    assert ev.view().overall is OverallState.FAULT
-    ev.update(scenario(T + 201, state="stopped"))
+    steps = [
+        scenario(
+            T + 200,
+            up=EVERYTHING,
+            units={sid: stopping(sid) for sid in UNITS},
+            poll=False,
+        ),
+        scenario(
+            T + 201,
+            up=without(*(e for e in EVERYTHING if e.startswith("controller -> "))),
+            units={
+                "controller": "stopped",
+                "relay": stopping("relay"),
+                "sink@1": stopping("sink@1"),
+                "sink@2": stopping("sink@2"),
+            },
+        ),
+        scenario(
+            T + 202,
+            up=("sink@1.udp", "sink@1.stats", "sink@2.udp", "sink@2.stats"),
+            units={
+                "controller": "stopped",
+                "relay": "stopped",
+                "sink@1": stopping("sink@1"),
+                "sink@2": stopping("sink@2"),
+            },
+        ),
+        scenario(
+            T + 203,
+            units={
+                "controller": "stopped",
+                "relay": "stopped",
+                "sink@1": snap("sink@1", "deactivating", job_pending=True),
+                "sink@2": "stopped",
+            },
+        ),
+    ]
+    events = []
+    for inputs in steps:
+        events += ev.update(inputs)
+        assert ev.view().overall is not OverallState.FAULT
+        assert ev.view().findings == ()
+    assert ev.view().overall is OverallState.STARTING
+    assert st(ev, "controller") is stopped
+    assert st(ev, "controller -> relay.rep") is waiting
+    events += ev.update(scenario(T + 204, state="stopped"))
+    assert no_faults(events)
     assert ev.view().overall is OverallState.STOPPED
-    assert codes(ev) == {}
+
+
+def test_staged_start_split_delivery_has_no_faults() -> None:
+    # The start jobs are announced over two reads: the sinks are queued while
+    # the relay and controller still look stopped with no job.
+    ev = make()
+    events = ev.update(scenario(T, state="stopped"))
+    events += ev.update(
+        scenario(
+            T + 1,
+            state="stopped",
+            units={"sink@1": "queued", "sink@2": "queued"},
+            poll=False,
+        )
+    )
+    assert ev.view().overall is OverallState.STARTING
+    assert st(ev, "relay") is stopped
+    events += ev.update(scenario(T + 1, state="queued", poll=False))
+    assert no_faults(events)
+    assert ev.view().overall is OverallState.STARTING
+
+
+def test_manual_stop_waits_during_its_job_then_faults() -> None:
+    ev = running()
+    events = ev.update(
+        scenario(
+            T + 50,
+            up=without(*SINK2_GONE),
+            units={"sink@2": snap("sink@2", "deactivating", job_pending=True)},
+        )
+    )
+    assert no_faults(events)
+    assert st(ev, "sink@2.stats") is waiting
+    assert st(ev, "relay -> sink@2.stats") is waiting
+    ev.update(scenario(T + 51, up=without(*SINK2_GONE), units={"sink@2": "stopped"}))
+    assert codes(ev)["sink@2"] is FindingCode.UNIT_STOPPED
+    assert st(ev, "sink@2.stats") is fault
+    assert ev.view().overall is OverallState.FAULT
 
 
 def test_manual_stop_of_one_unit_is_fault() -> None:
