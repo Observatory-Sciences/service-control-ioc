@@ -75,3 +75,6 @@ testpaths = ["tests", "teststack/tests"]
 asyncio_mode = "strict"
 filterwarnings = ["error"]
 addopts = "--import-mode=importlib"
+markers = [
+  "container: integration tests in the Rocky 9 systemd container (need QDSC_CONTAINER=1)",
+]
