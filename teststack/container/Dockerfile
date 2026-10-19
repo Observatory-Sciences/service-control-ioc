@@ -1,10 +1,12 @@
 # Rocky 9 with systemd as PID 1, for local integration of the scdemo stack.
 FROM rockylinux/rockylinux:9
 
-RUN dnf install -y systemd python3.11 iproute procps-ng util-linux \
+RUN dnf install -y systemd python3.11 python3.11-pip iproute procps-ng util-linux \
     && dnf clean all
 
-COPY --from=ghcr.io/astral-sh/uv:0.13.1 /uv /usr/local/bin/uv
+# uv from PyPI, pinned to the Mac's version: ghcr.io is unreachable from the
+# Rancher Desktop VM in this environment, so COPY --from=ghcr.io/astral-sh/uv fails.
+RUN python3.11 -m pip install --no-cache-dir uv==0.13.1
 
 # Container-systemd hygiene: mask units that need real hardware or a console
 # (udev, getty, ttys), so boot is quiet and reaches "running", not "degraded".
