@@ -124,3 +124,23 @@ def test_find_port_base_survives_a_tiny_fd_limit() -> None:
         check=False,
     )
     assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.asyncio
+async def test_wait_event_after_skips_earlier_events(port_base: int) -> None:
+    async with probe(port_base) as proc:
+        starting = await proc.wait_event("starting")
+        ready = await proc.wait_event("ready", after=starting)
+        assert ready["event"] == "ready"
+        with pytest.raises(TimeoutError):
+            await proc.wait_event("starting", timeout=0.3, after=starting)
+        with pytest.raises(TimeoutError):
+            await proc.wait_event("ready", timeout=0.3, after=ready)
+
+
+@pytest.mark.asyncio
+async def test_wait_event_after_needs_a_seen_event(port_base: int) -> None:
+    async with probe(port_base) as proc:
+        await proc.wait_event("ready")
+        with pytest.raises(ValueError, match="not one of"):
+            await proc.wait_event("ready", after={"event": "starting"})

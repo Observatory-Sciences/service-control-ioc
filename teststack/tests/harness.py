@@ -1,6 +1,7 @@
 """Test harness: run an scdemo service as a subprocess and watch its events."""
 
 import asyncio
+import contextlib
 import errno
 import json
 import os
@@ -8,7 +9,7 @@ import random
 import signal
 import socket
 import sys
-from collections.abc import Callable
+from collections.abc import AsyncGenerator, Callable, Mapping
 from types import TracebackType
 from typing import Final, Self
 
@@ -16,6 +17,7 @@ import zmq
 import zmq.asyncio
 
 from scdemo.logs import parse_logfmt
+from scdemo.protocol import ports
 
 EXIT_TIMEOUT: Final = 10
 PORT_SPAN: Final = 211  # offsets +0 .. +210
@@ -172,8 +174,10 @@ class ServiceProc:
     def _on_stderr(self, line: str) -> None:
         self.stderr_lines.append(line)
 
-    def _find(self, event: str, match: dict[str, str]) -> dict[str, str] | None:
-        for candidate in self.events:
+    def _find(
+        self, event: str, match: dict[str, str], start: int
+    ) -> dict[str, str] | None:
+        for candidate in self.events[start:]:
             if candidate["event"] == event and all(
                 candidate.get(k) == v for k, v in match.items()
             ):
@@ -184,17 +188,27 @@ class ServiceProc:
         self,
         event: str,
         timeout: float = 10,  # noqa: ASYNC109 - the plan fixes this signature
+        *,
+        after: dict[str, str] | None = None,
         **match: str,
     ) -> dict[str, str]:
         """Return the first event named ``event`` whose fields equal ``match``.
 
-        Events already received count. Raise TimeoutError if none arrives.
+        Events already received count. With ``after`` (an event dict this
+        process returned earlier, compared by identity), only events logged
+        after it count. Raise TimeoutError if none arrives.
         """
+        start = 0
+        if after is not None:
+            index = next((i for i, e in enumerate(self.events) if e is after), None)
+            if index is None:
+                raise ValueError(f"{self.svc}: after= is not one of its events")
+            start = index + 1
         found: dict[str, str] | None = None
 
         def seen() -> bool:
             nonlocal found
-            found = self._find(event, match)
+            found = self._find(event, match, start)
             return found is not None
 
         try:
@@ -227,3 +241,121 @@ class ServiceProc:
         assert self._proc is not None
         self._proc.send_signal(signal.SIGTERM)
         return await self.wait_exit()
+
+
+STACK_ORDER: Final = ("sink1", "sink2", "hwsim", "relay", "controller")
+_STACK_SERVICES: Final = {
+    "sink1": ("sink", {"SCDEMO_INSTANCE": "1"}),
+    "sink2": ("sink", {"SCDEMO_INSTANCE": "2"}),
+    "hwsim": ("hwsim", {}),
+    "relay": ("relay", {}),
+    "controller": ("controller", {}),
+}
+READY_TIMEOUT: Final = 15
+RELEASE_TIMEOUT: Final = 5
+RELEASE_POLL: Final = 0.05
+
+
+def _tcp_port_bindable(port: int) -> bool:
+    """True if ``port`` binds with SO_REUSEADDR, as the services bind it."""
+    with socket.socket() as s:
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            s.bind(("0.0.0.0", port))
+        except OSError as err:
+            if err.errno in _NOT_FREE:
+                return False
+            raise
+    return True
+
+
+class Stack:
+    """The running services of one local stack, by name (see ``STACK_ORDER``)."""
+
+    def __init__(self, port_base: int, env: Mapping[str, Mapping[str, str]]) -> None:
+        unknown = sorted(set(env) - set(STACK_ORDER))
+        if unknown:
+            raise TypeError(f"stack(): unknown service {', '.join(unknown)}")
+        self.port_base = port_base
+        self.env = env
+        self.procs: dict[str, ServiceProc] = {}
+
+    @property
+    def sink1(self) -> ServiceProc:
+        return self.procs["sink1"]
+
+    @property
+    def sink2(self) -> ServiceProc:
+        return self.procs["sink2"]
+
+    @property
+    def hwsim(self) -> ServiceProc:
+        return self.procs["hwsim"]
+
+    @property
+    def relay(self) -> ServiceProc:
+        return self.procs["relay"]
+
+    @property
+    def controller(self) -> ServiceProc:
+        return self.procs["controller"]
+
+    async def start(self, name: str) -> ServiceProc:
+        """Start ``name``; wait for ``ready`` except for the controller.
+
+        The controller is only ready once configured, which some tests
+        prevent on purpose, so callers wait for it themselves.
+        """
+        svc, defaults = _STACK_SERVICES[name]
+        env = {**defaults, **self.env.get(name, {})}
+        proc = ServiceProc(svc, self.port_base, **env)
+        await proc.__aenter__()
+        self.procs[name] = proc
+        if name != "controller":
+            await proc.wait_event("ready", timeout=READY_TIMEOUT)
+        return proc
+
+    async def stop(self, name: str) -> None:
+        """SIGTERM ``name`` (if still running) and wait for it to exit."""
+        proc = self.procs.pop(name)
+        try:
+            if proc.returncode is None:
+                await proc.terminate()
+        finally:
+            await proc.__aexit__(None, None, None)
+
+    async def restart(self, name: str) -> ServiceProc:
+        """Stop ``name``, wait until its ports are free again, start it afresh."""
+        await self.stop(name)
+        if name == "relay":
+            p = ports(self.port_base)
+            tcp = (p.rep, p.router, p.pub, p.http)
+            # The kernel gives no event when a dead process's sockets are
+            # released, so poll the binds (normally free at the first try).
+            async with asyncio.timeout(RELEASE_TIMEOUT):
+                while True:
+                    if all(_tcp_port_bindable(port) for port in tcp):
+                        break
+                    await asyncio.sleep(RELEASE_POLL)
+        return await self.start(name)
+
+
+@contextlib.asynccontextmanager
+async def stack(
+    port_base: int, **per_service_env: Mapping[str, str]
+) -> AsyncGenerator[Stack]:
+    """Run sink1, sink2, hwsim, relay and controller, started in that order.
+
+    ``per_service_env`` gives extra environment per service, e.g.
+    ``stack(base, relay={"SCDEMO_FAULT_IGNORE_CONFIG": "1"})``. On exit every
+    service still running is killed.
+    """
+    s = Stack(port_base, per_service_env)
+    try:
+        for name in STACK_ORDER:
+            await s.start(name)
+        yield s
+    finally:
+        async with contextlib.AsyncExitStack() as procs:
+            for proc in s.procs.values():
+                procs.push_async_exit(proc)
