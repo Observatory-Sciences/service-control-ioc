@@ -7,6 +7,7 @@ import logging
 import os
 import signal
 import sys
+import threading
 from collections.abc import AsyncGenerator, Callable, Iterable, Mapping
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -312,6 +313,44 @@ async def test_staged_start_with_late_properties_has_no_faults() -> None:
     assert not [e for e in h.events if e.kind == "service" and e.new == "stopped"][
         len(SPEC.services) :
     ]
+
+
+@pytest.mark.asyncio
+async def test_start_between_first_update_and_next_poll_is_gate_checked() -> None:
+    # The first update waits for a scan and the bus. When the bus is last, that
+    # update must still count the scan, or a start seen before the next poll
+    # has "no poll before it" and its gate check is silently skipped.
+    clock = FakeClock(T)
+    started = props(UNITS["controller"], "active", T + 1)
+    systemd = stack(overrides={UNITS["controller"]: started})
+    systemd.reads_open.clear()
+    release = threading.Event()
+    scans = 0
+
+    def on_scan() -> None:  # worker thread
+        nonlocal scans
+        scans += 1
+        if scans == 1:
+            clock.now = T + 2  # the next poll starts after the controller
+        else:
+            release.wait(5)
+
+    h = Harness(systemd, ScriptedScan(scdemo_table(SPEC, SINKS_UP)), clock)
+    h.scan.on_scan = on_scan
+    try:
+        async with running(h.core):
+            await h.scan.polls(1)
+            systemd.reads_open.set()
+            await h.wait_text("stack fault")
+            release.set()
+            await h.wait_text("GATE gate_violation: scdemo-controller.service")
+    finally:
+        release.set()
+    gates = [e.finding for e in h.events if e.kind == "gate" and e.finding]
+    assert any(
+        f.units == (UNITS["controller"], UNITS["relay"]) and "relay.rep" in f.message
+        for f in gates
+    )
 
 
 @pytest.mark.asyncio

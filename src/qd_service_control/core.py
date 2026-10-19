@@ -121,6 +121,7 @@ class Core:
         self._primed = False  # the first update has run
         self._scanned = False  # a poll has finished, successfully or not
         self._sockets: SocketTable | None = None
+        self._scan_time: float | None = None  # of self._sockets, if it is a table
         self._scan_failing = False
         self._cpu: dict[str, float | None] = dict.fromkeys(service_units)
         self._files: dict[str, bool] = {}
@@ -249,6 +250,7 @@ class Core:
             log.info("socket scan recovered")
             self._scan_failing = False
         self._sockets = poll.sockets
+        self._scan_time = now if poll.sockets is not None else None
         for unit, meter in self._meters.items():
             self._cpu[unit] = meter.sample(now, poll.usage.get(unit))
         self._files = poll.files
@@ -320,6 +322,12 @@ class Core:
             if not (self._scanned and (self._bus_connected or self._bus_tried)):
                 return
             self._primed = True  # from now on every change is evaluated
+            if poll_time is None:
+                # The bus came last: the scan this update waited for has not
+                # been evaluated yet, so it is still fresh. Without it the
+                # gate tracker has no first poll, and skips the check of a
+                # start seen before the next one.
+                poll_time = self._scan_time
         now = max(self._clock() if now is None else now, self._last_now)
         self._last_now = now
         inputs = Inputs(
