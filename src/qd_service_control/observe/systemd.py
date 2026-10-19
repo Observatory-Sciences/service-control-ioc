@@ -31,6 +31,8 @@ IDLE_JOB: Final = (0, "/")
 DEFAULT_BACKOFF: Final = (0.5, 1.0, 2.0, 5.0)
 
 PropertiesCallback = Callable[[str, dict[str, object]], None]
+JobNewCallback = Callable[[int, str, str], None]  # id, job path, unit
+JobRemovedCallback = Callable[[int, str, str, str], None]  # ... and result
 
 
 class SystemdBus(Protocol):
@@ -53,6 +55,14 @@ class SystemdBus(Protocol):
         ...
 
     def on_reloading(self, cb: Callable[[bool], None]) -> None: ...
+
+    def on_job_new(self, cb: JobNewCallback) -> None:
+        """Call ``cb(id, job_path, unit)`` on each Manager ``JobNew``."""
+        ...
+
+    def on_job_removed(self, cb: JobRemovedCallback) -> None:
+        """Call ``cb(id, job_path, unit, result)`` on each Manager ``JobRemoved``."""
+        ...
 
     async def wait_for_disconnect(self) -> None:
         """Return or raise ``EOFError`` when the connection drops."""
@@ -143,6 +153,11 @@ class SystemdObserver:
     emitted when a Unit-interface PropertiesChanged changes the dedup key,
     and after ``Reloading(False)`` for each unit whose snapshot changed. On
     a disconnect: ``on_connection(False)``, back off, start again.
+
+    ``JobNew`` and ``JobRemoved`` also update a unit's ``Job``. systemd sends
+    them at once, but may hold back a queued unit's PropertiesChanged until
+    the jobs it waits for are done: without them, a unit queued behind
+    another would look stopped and idle for that long.
     """
 
     def __init__(
@@ -203,6 +218,8 @@ class SystemdObserver:
         for unit in self._units:
             bus.on_properties_changed(unit, partial(self._properties_changed, unit))
         bus.on_reloading(lambda active: None if active else reload_done.set())
+        bus.on_job_new(self._job_new)
+        bus.on_job_removed(self._job_removed)
         await bus.subscribe()
 
         await self._read_all(bus)
@@ -262,6 +279,25 @@ class SystemdObserver:
             and interface == UNIT_IFACE
             and _dedup_key(props) != self._keys.get(unit)
         ):
+            self._emit(unit)
+
+    def _job_new(self, job_id: int, job_path: str, unit: str) -> None:
+        props = self._props.get(unit)
+        if props is None:  # not ours, or not read yet (the read has the job)
+            return
+        props["Job"] = (job_id, job_path)
+        self._emit_if_changed(unit)
+
+    def _job_removed(self, job_id: int, job_path: str, unit: str, result: str) -> None:
+        del job_id, result  # only the path identifies the unit's current job
+        props = self._props.get(unit)
+        if props is None or _job(props)[1:] != (job_path,):
+            return  # not ours, or the unit already has another job (or none)
+        props["Job"] = IDLE_JOB
+        self._emit_if_changed(unit)
+
+    def _emit_if_changed(self, unit: str) -> None:
+        if self._live and _dedup_key(self._props[unit]) != self._keys.get(unit):
             self._emit(unit)
 
     def _emit(self, unit: str) -> None:
@@ -328,6 +364,12 @@ class DbusFastBus:
 
     def on_reloading(self, cb: Callable[[bool], None]) -> None:
         _member(self._manager, "on_reloading")(cb)
+
+    def on_job_new(self, cb: JobNewCallback) -> None:
+        _member(self._manager, "on_job_new")(cb)
+
+    def on_job_removed(self, cb: JobRemovedCallback) -> None:
+        _member(self._manager, "on_job_removed")(cb)
 
     async def wait_for_disconnect(self) -> None:
         await self._bus.wait_for_disconnect()

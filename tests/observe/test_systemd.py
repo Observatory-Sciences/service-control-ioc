@@ -192,6 +192,36 @@ async def test_duplicate_unit_signal_ignored(
 
 
 @pytest.mark.asyncio
+async def test_job_signals_update_the_job(
+    systemd: FakeSystemd, recorder: Recorder
+) -> None:
+    # On a real bus, a unit queued behind another gets JobNew at once but its
+    # PropertiesChanged (with the Job) only when the jobs before it are done.
+    task = await started(make_observer(systemd, recorder), recorder)
+    try:
+        bus = systemd.bus
+        job = "/org/freedesktop/systemd1/job/7"
+        bus.fire_job_new(7, job, "b.service")
+        assert len(recorder.snapshots) == 3
+        assert recorder.snapshots[-1].name == "b.service"
+        assert recorder.snapshots[-1].job_pending
+
+        bus.fire_job_new(8, "/org/freedesktop/systemd1/job/8", "other.service")
+        bus.fire_job_removed(6, "/org/freedesktop/systemd1/job/6", "b.service")
+        assert len(recorder.snapshots) == 3  # not ours, or not b's current job
+
+        # The PropertiesChanged that carries the same job is a duplicate.
+        bus.fire_properties_changed("b.service", UNIT_IFACE, {"Job": [7, job]})
+        assert len(recorder.snapshots) == 3
+
+        bus.fire_job_removed(7, job, "b.service")
+        assert len(recorder.snapshots) == 4
+        assert not recorder.snapshots[-1].job_pending
+    finally:
+        await stop(task)
+
+
+@pytest.mark.asyncio
 async def test_reloading_rereads(systemd: FakeSystemd, recorder: Recorder) -> None:
     observer = make_observer(systemd, recorder, (*UNITS, "c.service"))
     task = await started(observer, recorder)

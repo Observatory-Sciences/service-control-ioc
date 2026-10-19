@@ -14,6 +14,17 @@ MANAGER_XML: Final = """\
    <arg type="as" name="names" direction="in"/>
    <arg type="a(ssssssouso)" name="units" direction="out"/>
   </method>
+  <signal name="JobNew">
+   <arg type="u" name="id"/>
+   <arg type="o" name="job"/>
+   <arg type="s" name="unit"/>
+  </signal>
+  <signal name="JobRemoved">
+   <arg type="u" name="id"/>
+   <arg type="o" name="job"/>
+   <arg type="s" name="unit"/>
+   <arg type="s" name="result"/>
+  </signal>
   <signal name="Reloading">
    <arg type="b" name="active"/>
   </signal>

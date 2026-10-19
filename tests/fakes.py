@@ -90,6 +90,8 @@ class FakeBus:
             str, list[Callable[[str, dict[str, object]], None]]
         ] = {}
         self._reload_handlers: list[Callable[[bool], None]] = []
+        self._job_new_handlers: list[Callable[[int, str, str], None]] = []
+        self._job_removed_handlers: list[Callable[[int, str, str, str], None]] = []
         self._dropped = asyncio.Event()
         self._user_disconnect = False
 
@@ -128,6 +130,12 @@ class FakeBus:
     def on_reloading(self, cb: Callable[[bool], None]) -> None:
         self._reload_handlers.append(cb)
 
+    def on_job_new(self, cb: Callable[[int, str, str], None]) -> None:
+        self._job_new_handlers.append(cb)
+
+    def on_job_removed(self, cb: Callable[[int, str, str, str], None]) -> None:
+        self._job_removed_handlers.append(cb)
+
     async def wait_for_disconnect(self) -> None:
         await self._dropped.wait()
         if not self._user_disconnect:
@@ -145,6 +153,26 @@ class FakeBus:
         self.systemd.units[unit].update(changed)
         for cb in self._prop_handlers.get(unit, []):
             cb(interface, dict(changed))
+
+    def fire_job_new(self, job_id: int, job_path: str, unit: str) -> None:
+        """Manager ``JobNew``; the unit's ``Job`` changes, without a
+        PropertiesChanged (systemd may send that one much later)."""
+        if unit in self.systemd.units:
+            self.systemd.units[unit]["Job"] = (job_id, job_path)
+        for cb in self._job_new_handlers:
+            cb(job_id, job_path, unit)
+
+    def fire_job_removed(
+        self, job_id: int, job_path: str, unit: str, result: str = "done"
+    ) -> None:
+        props = self.systemd.units.get(unit)
+        if props is not None and props["Job"] in (
+            (job_id, job_path),
+            [job_id, job_path],
+        ):
+            props["Job"] = IDLE_JOB
+        for cb in self._job_removed_handlers:
+            cb(job_id, job_path, unit, result)
 
     def fire_reloading(self, active: bool) -> None:
         for cb in self._reload_handlers:

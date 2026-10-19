@@ -282,6 +282,39 @@ async def test_staged_start_split_burst_has_no_faults() -> None:
 
 
 @pytest.mark.asyncio
+async def test_staged_start_with_late_properties_has_no_faults() -> None:
+    # Real systemd (container): JobNew comes for every unit at once, but a unit
+    # queued behind others gets its PropertiesChanged (with the Job) only once
+    # those are done. Meanwhile it must not look stopped.
+    clock = FakeClock(T)
+    h = Harness(stack("stopped"), ScriptedScan(), clock)
+    sinks = (UNITS["sink@1"], UNITS["sink@2"])
+    jobs = {
+        unit: (10 + i, f"/org/freedesktop/systemd1/job/{10 + i}")
+        for i, unit in enumerate((*UNITS.values(), ALL_UNIT))
+    }
+    async with running(h.core):
+        await h.wait_text("stack stopped")
+        clock.now = T + 1
+        for unit, (job_id, path) in jobs.items():
+            h.systemd.bus.fire_job_new(job_id, path, unit)
+        for unit in sinks:
+            h.change(unit, "activating", T + 1, Job=jobs[unit])
+        await h.wait_text("stack starting")
+        clock.now = T + 2
+        for unit in sinks:
+            h.change(unit, "active", T + 2)
+            h.systemd.bus.fire_job_removed(*jobs[unit], unit)
+        h.scan.table = scdemo_table(SPEC, SINKS_UP)
+        await h.wait_text("listener sink@2.stats ready")
+        await h.scan.polls()
+    assert h.faults() == []
+    assert not [e for e in h.events if e.kind == "service" and e.new == "stopped"][
+        len(SPEC.services) :
+    ]
+
+
+@pytest.mark.asyncio
 async def test_orderly_stop_has_no_faults() -> None:
     # systemctl stop scdemo-all: stop jobs on every unit, then reverse order.
     clock = FakeClock(T)
