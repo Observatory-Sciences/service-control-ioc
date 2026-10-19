@@ -101,6 +101,7 @@ for style in $STYLES; do
     esac
 done
 [[ "$DEADLINE" =~ ^[0-9]+$ ]] || { echo "smoke.sh: SMOKE_DEADLINE must be whole seconds, got '$DEADLINE'" >&2; exit 2; }
+DEADLINE=$((10#$DEADLINE))  # base 10: a leading zero (08, 09) is not octal
 [ -x "$DROPIN" ] || { echo "smoke.sh: $DROPIN missing; run install.sh first" >&2; exit 1; }
 trap clear_all EXIT
 
