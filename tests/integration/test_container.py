@@ -151,3 +151,96 @@ def test_tool_started_after_stack(container) -> None:
     events = container.tool_events()
     bad = [e for e in events if e.get("kind") in {"finding", "gate"}]
     assert not bad, texts(bad)
+
+
+# -- restarts from ready ---------------------------------------------------------
+
+ALLOWED_FINDINGS = {"gate_violation_possible"}
+
+
+def ready_stack(container) -> int:
+    """Start the stack cleanly with the tool running; return the event count."""
+    clean_gating(container)
+    start_tool_and_wait_stopped(container)
+    container.start_stack()
+    container.wait_for(
+        lambda ev: (
+            bool(stack_events(ev, "ready")) and bool(stack_events(ev, "post-ready"))
+        ),
+        60,
+        "'stack ready' and 'stack post-ready'",
+    )
+    time.sleep(2)  # let the post-ready polls settle
+    return len(container.tool_events())
+
+
+def restart_and_wait_ready(container, unit: str, timeout: float) -> list[Event]:
+    """Restart ``unit``; return the events after it once the stack is ready again."""
+    before = ready_stack(container)
+    container.sh(f"systemctl restart {unit}", timeout=120)
+    container.wait_for(
+        lambda ev: bool(stack_events(ev[before:], "ready")),
+        timeout,
+        f"'stack ready' after restarting {unit}",
+    )
+    time.sleep(3)  # a few more polls: nothing may be raised late
+    return container.tool_events()[before:]
+
+
+def assert_no_faults(events: Sequence[Event]) -> None:
+    bad = [
+        e
+        for e in events
+        if (finding(e) and code(e) not in ALLOWED_FINDINGS) or e.get("new") == "fault"
+    ]
+    assert not bad, texts(bad)
+
+
+def overall(events: Sequence[Event]) -> list[str]:
+    return [
+        str(e.get("new"))
+        for e in events
+        if e.get("kind") == "stack" and "post" not in str(e.get("new"))
+    ]
+
+
+def test_controller_restart_no_faults_and_no_early_ready(container) -> None:
+    events = restart_and_wait_ready(container, "scdemo-controller.service", 30)
+    assert_no_faults(events)
+    assert overall(events)[0] != "ready", texts(events)  # it left ready first
+    assert overall(events)[-1] == "ready", texts(events)
+    # The final 'stack ready' only after every controller edge was seen again
+    # in a scan of the new invocation (no ready from the old scan).
+    last_ready = max(
+        i
+        for i, e in enumerate(events)
+        if e.get("kind") == "stack" and e.get("new") == "ready"
+    )
+    for name in ("rep", "router", "pub", "http"):
+        element = f"controller -> relay.{name}"
+        ready_at = [
+            i
+            for i, e in enumerate(events)
+            if e.get("element") == element and e.get("new") == "ready"
+        ]
+        assert ready_at, f"{element} never ready again:\n{texts(events)}"
+        assert ready_at[-1] < last_ready, texts(events)
+    # No 'stack ready' while the controller's edges were not ready.
+    edges_down = False
+    for e in events:
+        if str(e.get("element", "")).startswith("controller -> "):
+            edges_down = e.get("new") != "ready"
+        if e.get("kind") == "stack" and e.get("new") == "ready":
+            assert not edges_down, texts(events)
+
+
+def test_relay_restart_no_faults(container) -> None:
+    events = restart_and_wait_ready(container, "scdemo-relay.service", 45)
+    assert_no_faults(events)
+    assert overall(events)[-1] == "ready", texts(events)
+
+
+def test_whole_stack_restart_no_faults(container) -> None:
+    events = restart_and_wait_ready(container, "scdemo-all.service", 90)
+    assert_no_faults(events)
+    assert overall(events)[-1] == "ready", texts(events)
