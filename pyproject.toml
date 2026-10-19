@@ -6,7 +6,10 @@ authors = [
     { name = "Ulrik Pedersen", email = "ukp@observatorysciences.co.uk" }
 ]
 requires-python = ">=3.11"
-dependencies = []
+dependencies = [
+    "pydantic>=2.14.1",
+    "pyyaml>=6.0.3",
+]
 
 [project.scripts]
 qd-service-control = "qd_service_control:main"
@@ -22,6 +25,7 @@ dev = [
     "ruff==0.17.1",
     "scdemo",
     "ty==0.0.89",
+    "types-pyyaml>=6.0.12.20260906",
 ]
 
 [tool.ruff]

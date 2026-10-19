@@ -1,2 +1,3 @@
-def main() -> None:
-    print("Hello from qd-service-control!")
+from qd_service_control.cli import main
+
+__all__ = ["main"]

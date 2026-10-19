@@ -1,0 +1,41 @@
+prefix: "SCDEMO:SC"
+top: controller
+vars: {base: 20000}
+flags: {hardware: true}
+services:
+  sink:
+    unit: "scdemo-sink@{n}.service"
+    instances: {from: 1, to: 2}
+    listeners:
+      udp:   {proto: udp, port: "base + 10 + n", address: 127.0.0.1}
+      stats: {proto: tcp, port: "base + 20 + n", address: 127.0.0.1}
+  relay:
+    unit: scdemo-relay.service
+    listeners:
+      rep:    {proto: tcp, port: "base + 100", address: 127.0.0.1}
+      router: {proto: tcp, port: "base + 101", address: 127.0.0.1}
+      pub:    {proto: tcp, port: "base + 102", address: 127.0.0.1}
+      pull:   {proto: tcp, port: "base + 103", address: 127.0.0.1, phase: post}
+      http:   {proto: tcp, port: "base + 104", address: 127.0.0.1}
+      udp:    {proto: udp, port: "base + 105", address: 127.0.0.1}
+  controller:
+    unit: scdemo-controller.service
+hosts:
+  hw:
+    address: 127.0.0.2
+    when: hardware
+    listeners:
+      ctrl: {proto: tcp, port: "base + 200"}
+edges:
+  - {client: relay, server: sink.stats}
+  - {client: relay, server: sink.udp, sender: connected, instances: [1], phase: post}
+  - {client: relay, server: sink.udp, sender: unconnected, instances: [2], phase: post}
+  - {client: sink, server: relay.pull, phase: post}
+  - {client: controller, server: relay.rep}
+  - {client: controller, server: relay.router}
+  - {client: controller, server: relay.pub}
+  - {client: controller, server: relay.http}
+  - {client: relay, server: hw.ctrl, phase: post, when: hardware}
+  - {client: hw, server: relay.udp, sender: remote, phase: post, when: hardware}
+groups:
+  all: {unit: scdemo-all.service, members: [sink, relay, controller]}
