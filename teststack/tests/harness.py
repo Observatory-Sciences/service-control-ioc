@@ -69,6 +69,7 @@ class ServiceProc:
         }
         self.events: list[dict[str, str]] = []
         self.stderr_lines: list[str] = []
+        self.other_stdout: list[str] = []  # stdout lines that are not events
         self._proc: asyncio.subprocess.Process | None = None
         self._changed = asyncio.Condition()
         self._readers: asyncio.TaskGroup | None = None
@@ -134,6 +135,8 @@ class ServiceProc:
         event = parse_logfmt(line)
         if "event" in event:
             self.events.append(event)
+        else:
+            self.other_stdout.append(line)
 
     def _on_stderr(self, line: str) -> None:
         self.stderr_lines.append(line)

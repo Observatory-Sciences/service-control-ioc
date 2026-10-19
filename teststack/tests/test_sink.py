@@ -92,7 +92,9 @@ async def test_sink_overlong_line_drops_client_quietly(port_base: int) -> None:
         finally:
             w.close()
             await w.wait_closed()
-        assert not any("Traceback" in line for line in sink.stderr_lines)
+        # asyncio logs unhandled callback errors through logging, to stdout.
+        noise = [*sink.stderr_lines, *sink.other_stdout]
+        assert not any("Traceback" in line or "Unhandled" in line for line in noise)
         assert sink.returncode is None
 
 
