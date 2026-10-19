@@ -1,7 +1,7 @@
 """A throwaway service for testing the harness and run_service.
 
 Run as ``python -m _probe_service`` (the tests put this directory on PYTHONPATH).
-``SCDEMO_PROBE_MODE``: ``run`` (default) idles until SIGTERM, ``exit3`` exits 3.
+``SCDEMO_PROBE_MODE``: ``run`` (default) idles until SIGTERM, ``exit3`` exits 3, ``burst`` logs 500 lines on SIGTERM.
 """
 
 import asyncio
@@ -21,6 +21,12 @@ async def main() -> None:
     log_event("ready", note="two words")
     if os.environ.get("SCDEMO_PROBE_MODE") == "exit3":
         sys.exit(3)
+    if os.environ.get("SCDEMO_PROBE_MODE") == "burst":
+        try:
+            await asyncio.Event().wait()
+        finally:
+            for i in range(500):
+                log_event("burst", i=i)
     await asyncio.Event().wait()
 
 

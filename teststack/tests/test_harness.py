@@ -1,10 +1,12 @@
 import asyncio
 import socket
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
-from harness import ServiceProc
+from harness import ServiceProc, find_port_base, range_is_free
 
 HERE = str(Path(__file__).parent)
 
@@ -81,3 +83,44 @@ async def test_default_module_is_scdemo_service(port_base: int) -> None:
     async with ServiceProc("nosuch", port_base) as proc:
         assert await proc.wait_exit() == 1
         assert any("nosuch" in line for line in proc.stderr_lines)
+
+
+@pytest.mark.asyncio
+async def test_terminate_returns_after_all_output_is_read(port_base: int) -> None:
+    async with probe(port_base, SCDEMO_PROBE_MODE="burst") as proc:
+        await proc.wait_event("ready")
+        assert await proc.terminate() == 0
+        bursts = [e for e in proc.events if e["event"] == "burst"]
+        assert len(bursts) == 500
+        assert proc.events[-1]["event"] == "shutdown"
+
+
+def test_find_port_base_gives_up() -> None:
+    with pytest.raises(RuntimeError, match="3 attempts"):
+        find_port_base(attempts=3, is_free=lambda _base: False)
+
+
+def test_range_is_free_sees_a_used_port(port_base: int) -> None:
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", port_base + 50))
+        assert range_is_free(port_base) is False
+    assert range_is_free(port_base) is True
+
+
+def test_find_port_base_survives_a_tiny_fd_limit() -> None:
+    # Holding all sockets at once used to hit EMFILE and spin forever.
+    code = (
+        "import resource\n"
+        "resource.setrlimit(resource.RLIMIT_NOFILE, (24, 24))\n"
+        "from harness import find_port_base\n"
+        "assert 30000 <= find_port_base() <= 59000\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        env={"PYTHONPATH": HERE},
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr

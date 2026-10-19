@@ -1,8 +1,11 @@
 """Test harness: run an scdemo service as a subprocess and watch its events."""
 
 import asyncio
+import errno
 import os
+import random
 import signal
+import socket
 import sys
 from collections.abc import Callable
 from types import TracebackType
@@ -11,6 +14,37 @@ from typing import Final, Self
 from scdemo.logs import parse_logfmt
 
 EXIT_TIMEOUT: Final = 10
+PORT_SPAN: Final = 211  # offsets +0 .. +210
+_NOT_FREE: Final = (errno.EADDRINUSE, errno.EACCES)
+
+
+def range_is_free(base: int) -> bool:
+    """True if every port in base..base+PORT_SPAN-1 is free (TCP and UDP) on 127.0.0.1.
+
+    Binds one socket at a time so the fd limit never matters. Only "address in
+    use" and "permission denied" mean not free; any other OSError propagates.
+    """
+    for port in range(base, base + PORT_SPAN):
+        for kind in (socket.SOCK_STREAM, socket.SOCK_DGRAM):
+            with socket.socket(socket.AF_INET, kind) as s:
+                try:
+                    s.bind(("127.0.0.1", port))
+                except OSError as err:
+                    if err.errno in _NOT_FREE:
+                        return False
+                    raise
+    return True
+
+
+def find_port_base(
+    attempts: int = 50, is_free: Callable[[int], bool] = range_is_free
+) -> int:
+    """A random base in 30000-59000 whose port range is free, or RuntimeError."""
+    for _ in range(attempts):
+        base = random.randint(30000, 59000)
+        if is_free(base):
+            return base
+    raise RuntimeError(f"no free port range found in {attempts} attempts")
 
 
 class ServiceProc:
@@ -38,6 +72,7 @@ class ServiceProc:
         self._proc: asyncio.subprocess.Process | None = None
         self._changed = asyncio.Condition()
         self._readers: asyncio.TaskGroup | None = None
+        self._eof = (asyncio.Event(), asyncio.Event())
 
     @property
     def returncode(self) -> int | None:
@@ -57,8 +92,12 @@ class ServiceProc:
         assert self._proc.stderr is not None
         self._readers = asyncio.TaskGroup()
         await self._readers.__aenter__()
-        self._readers.create_task(self._read(self._proc.stdout, self._on_event))
-        self._readers.create_task(self._read(self._proc.stderr, self._on_stderr))
+        self._readers.create_task(
+            self._read(self._proc.stdout, self._on_event, self._eof[0])
+        )
+        self._readers.create_task(
+            self._read(self._proc.stderr, self._on_stderr, self._eof[1])
+        )
         return self
 
     async def __aexit__(
@@ -81,13 +120,15 @@ class ServiceProc:
         self,
         stream: asyncio.StreamReader,
         handle: Callable[[str], None],
+        eof: asyncio.Event,
     ) -> None:
-        async for raw in stream:
-            handle(raw.decode(errors="replace").rstrip("\n"))
-            async with self._changed:
-                self._changed.notify_all()
-        async with self._changed:  # EOF: wake waiters so they can see the exit
-            self._changed.notify_all()
+        try:
+            async for raw in stream:
+                handle(raw.decode(errors="replace").rstrip("\n"))
+                async with self._changed:
+                    self._changed.notify_all()
+        finally:
+            eof.set()
 
     def _on_event(self, line: str) -> None:
         event = parse_logfmt(line)
@@ -136,10 +177,16 @@ class ServiceProc:
         return found
 
     async def wait_exit(self) -> int:
-        """Wait (at most 10 s) for the process to exit; return its exit code."""
+        """Wait (at most 10 s) for exit and for both pipes to reach EOF.
+
+        Every line the process wrote is in ``events`` when this returns.
+        """
         assert self._proc is not None
         async with asyncio.timeout(EXIT_TIMEOUT):
-            return await self._proc.wait()
+            code = await self._proc.wait()
+            for eof in self._eof:
+                await eof.wait()
+        return code
 
     async def terminate(self) -> int:
         """Send SIGTERM and return the exit code."""
