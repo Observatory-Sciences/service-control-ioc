@@ -480,9 +480,19 @@ class Evaluator:
         return _WAITING, ""
 
     def _dependent_up(self, owners: tuple[str, ...], inputs: Inputs) -> str | None:
-        """Rule 1: a dependent of an owner is up, as seen by a scan after it started."""
+        """Rule 1: a dependent of an owner is up, as seen by a scan after it started.
+
+        Only a dependent started at or after the owners' current start counts:
+        it was let through by this invocation of the owners, before the
+        element was there. A dependent that predates it (the owner was
+        restarted on its own) is no evidence of a gate failure; rule 2 applies.
+        """
         if self._scan_time is None:
             return None
+        owner_starts = [
+            _start_s(snap) for unit in owners if (snap := inputs.units.get(unit))
+        ]
+        owner_start = max(owner_starts, default=0.0)
         dependents: set[str] = set()
         for unit in owners:
             dependents |= self._graph.dependents_of(unit)
@@ -492,7 +502,8 @@ class Evaluator:
             if snap is None:
                 continue
             up = snap.active_state == "active" or snap.main_pid != 0
-            if up and _start_s(snap) < self._scan_time:
+            start = _start_s(snap)
+            if up and owner_start <= start < self._scan_time:
                 return unit
         return None
 
@@ -511,6 +522,17 @@ class Evaluator:
             starts.append(snap.active_enter_us / _US)
         return max(starts, default=None)
 
+    def _present(self, eid: str, detail: str, inputs: Inputs) -> _Result:
+        """``ready`` only if a scan since each owner's current start saw it.
+
+        A unit-change update reuses the last scan. After a restart that fits
+        between two polls, that scan shows the previous invocation's sockets
+        and files, which say nothing about the new one.
+        """
+        if self._seen_this_invocation(self._owner_units(eid), inputs):
+            return _Result(_READY, detail)
+        return _Result(_WAITING, f"{detail}, awaiting a scan since the unit started")
+
     def _listener(
         self,
         ls: ListenerSpec,
@@ -524,7 +546,7 @@ class Evaluator:
             return unobservable
         fact = facts[ls.id]
         if fact.present:
-            return _Result(_READY, fact.detail)
+            return self._present(ls.id, fact.detail, inputs)
         state, reason = self._missing(ls.id, ls.timeout, inputs, stack_stopped)
         if state is not _FAULT:
             return _Result(state, fact.detail)
@@ -562,9 +584,8 @@ class Evaluator:
         if probe is None:
             return _Result(_UNKNOWN, "not probed")
         if probe:
-            return _Result(
-                _READY, f"{fs.path} {'non-empty' if fs.non_empty else 'present'}"
-            )
+            detail = f"{fs.path} {'non-empty' if fs.non_empty else 'present'}"
+            return self._present(fs.id, detail, inputs)
         detail = f"{fs.path} {'missing or empty' if fs.non_empty else 'missing'}"
         state, reason = self._missing(fs.id, fs.timeout, inputs, stack_stopped)
         if state is not _FAULT:
@@ -586,7 +607,7 @@ class Evaluator:
             return unobservable or _Result(_UNKNOWN, "no socket scan")
         fact = match_edge(edge, self._spec, inputs.sockets, facts)
         if fact.present:
-            return _Result(_READY, fact.detail)
+            return self._present(edge.id, fact.detail, inputs)
         detail = _edge_missing_detail(edge, fact)
         state, reason = self._missing(edge.id, edge.timeout, inputs, stack_stopped)
         if state is not _FAULT:

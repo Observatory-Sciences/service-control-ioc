@@ -1028,3 +1028,101 @@ def test_optional_elements_are_shown_but_not_counted() -> None:
     assert view.elements[edge.id].state is waiting
     assert view.ready
     assert view.overall is OverallState.READY
+
+
+# -- single-unit restarts ------------------------------------------------------
+
+
+def restart_steps(
+    sid: str, at: float, missing: Sequence[str], files: Mapping[str, bool] | None = None
+) -> list[Inputs]:
+    """``systemctl restart <sid>`` that completes between two polls (at+0.2 ..
+    at+0.6), then a poll before the unit has re-created ``missing``, then a
+    poll with everything back."""
+
+    def unit(state: str, run: int, since: float, job: bool = False) -> UnitSnapshot:
+        return snap(sid, state, since=since, run=run, job_pending=job)
+
+    new = unit("active", 2, at + 0.6)
+    return [
+        scenario(at + 0.2, units={sid: unit("active", 1, T, True)}, up=EVERYTHING,
+                 poll=False, files=files),
+        scenario(at + 0.3, units={sid: unit("deactivating", 1, T, True)},
+                 up=EVERYTHING, poll=False, files=files),
+        scenario(at + 0.5, units={sid: unit("activating", 2, at + 0.5, True)},
+                 up=EVERYTHING, poll=False, files=files),
+        scenario(at + 0.6, units={sid: new}, up=EVERYTHING, poll=False, files=files),
+        scenario(at + 1.0, units={sid: new}, up=without(*missing),
+                 files={k: False for k in files or {}}),
+        scenario(at + 2.0, units={sid: new}, up=EVERYTHING, files=files),
+    ]  # fmt: skip
+
+
+CONTROLLER_EDGES = tuple(e for e in EVERYTHING if e.startswith("controller -> "))
+RELAY_GONE = tuple(
+    x for x in EVERYTHING if x.startswith("relay") or " relay" in x or "-> relay" in x
+)
+
+
+def test_restart_between_polls_is_not_ready_from_the_old_scan() -> None:
+    # C-1: the unit-change update after the restart reuses the last scan,
+    # taken before the new invocation started: its sockets prove nothing.
+    ev = running()
+    steps = restart_steps("controller", T + 1, CONTROLLER_EDGES)
+    events: list[Event] = []
+    for inputs in steps[:4]:
+        events += ev.update(inputs)
+    assert not ev.view().ready
+    assert st(ev, "controller") is ready
+    assert st(ev, "controller -> relay.rep") is waiting
+    assert "awaiting a scan" in ev.view().elements["controller -> relay.rep"].detail
+    events += ev.update(steps[4])
+    assert not ev.view().ready
+    assert "stack ready" not in " ".join(texts(events))
+    events += ev.update(steps[5])
+    assert ev.view().ready
+    assert no_faults(events)
+    assert [e.new for e in events if e.kind == "stack" and "post" not in e.text] == [
+        "starting",
+        "ready",
+    ]
+
+
+def test_restart_between_polls_is_not_ready_from_an_old_file_probe() -> None:
+    ev = running(with_file())
+    files = {"relay:file0": True}
+    for inputs in restart_steps("relay", T + 1, RELAY_GONE, files)[:4]:
+        ev.update(inputs)
+    assert st(ev, "relay:file0") is waiting
+
+
+def test_single_dependency_restart_has_no_faults() -> None:
+    # I-5: systemctl restart scdemo-relay while the controller (Wants+After)
+    # stays up. Before the relay binds again, rule 1 must not blame the
+    # controller, which predates the relay's new start.
+    ev = running()
+    events: list[Event] = []
+    for inputs in restart_steps("relay", T + 1, RELAY_GONE):
+        events += ev.update(inputs)
+        assert ev.view().overall is not OverallState.FAULT
+    assert no_faults(events)
+    assert ev.view().ready
+
+
+def test_rule1_still_fires_for_a_dependent_started_after_the_owner() -> None:
+    # The relay restarts at T+10; the controller is (re)started at T+11, after
+    # it, while relay.rep is not there yet: a real gate failure.
+    relay = snap("relay", since=T + 10, run=2)
+    controller = snap("controller", since=T + 11, run=2)
+    ev = running()
+    ev.update(
+        scenario(
+            T + 12,
+            up=without("relay.rep", "controller -> relay.rep"),
+            units={"relay": relay, "controller": controller},
+        )
+    )
+    assert st(ev, "relay.rep") is fault
+    finding = ev.view().elements["relay.rep"].finding
+    assert finding is not None
+    assert UNITS["controller"] in finding.message
