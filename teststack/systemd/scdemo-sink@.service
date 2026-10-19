@@ -1,0 +1,15 @@
+[Unit]
+Description=scdemo sink %i (test stack)
+PartOf=scdemo-all.service
+
+[Service]
+Type=simple
+User=scdemo
+Group=scdemo
+Environment=PYTHONUNBUFFERED=1
+Environment=SCDEMO_INSTANCE=%i
+EnvironmentFile=/etc/scdemo/sink%i.env
+ExecStart=/opt/scdemo/venv/bin/scdemo-sink
+Restart=on-failure
+RestartSec=5
+LogRateLimitIntervalSec=0

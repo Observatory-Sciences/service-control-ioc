@@ -1,0 +1,16 @@
+[Unit]
+Description=scdemo controller (test stack)
+Wants=scdemo-relay.service
+After=scdemo-relay.service
+PartOf=scdemo-all.service
+
+[Service]
+Type=simple
+User=scdemo
+Group=scdemo
+Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=/etc/scdemo/controller.env
+ExecStart=/opt/scdemo/venv/bin/scdemo-controller
+Restart=on-failure
+RestartSec=5
+LogRateLimitIntervalSec=0

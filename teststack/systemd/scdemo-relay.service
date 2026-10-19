@@ -1,0 +1,16 @@
+[Unit]
+Description=scdemo relay (test stack)
+Wants=scdemo-sink@1.service scdemo-sink@2.service
+After=scdemo-sink@1.service scdemo-sink@2.service
+PartOf=scdemo-all.service
+
+[Service]
+Type=simple
+User=scdemo
+Group=scdemo
+Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=/etc/scdemo/relay.env
+ExecStart=/opt/scdemo/venv/bin/scdemo-relay
+Restart=on-failure
+RestartSec=5
+LogRateLimitIntervalSec=0

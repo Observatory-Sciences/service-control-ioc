@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+# Wait until a local TCP listener or UDP bind exists on a port.
+# Usage: scdemo-wait-for-port <tcp|udp> <port>
+# Passive: it only reads the socket table with ss(8) and never connects, so it
+# cannot disturb the service it waits for. Polls every 0.5 s for up to
+# ${SCDEMO_WAIT_TIMEOUT:-60} seconds. Exit 0 when ready, 1 on timeout or bad
+# arguments.
+set -euo pipefail
+
+prog=scdemo-wait-for-port
+
+usage() {
+    echo "$prog: $1" >&2
+    echo "usage: $prog <tcp|udp> <port>" >&2
+    exit 1
+}
+
+[ "$#" -eq 2 ] || usage "expected 2 arguments, got $#"
+proto=$1
+port=$2
+
+case "$proto" in
+    tcp) flags=-Hltn ;;
+    udp) flags=-Hlun ;;
+    *) usage "protocol must be tcp or udp, got '$proto'" ;;
+esac
+
+if ! [[ "$port" =~ ^[0-9]{1,5}$ ]] || (( 10#$port < 1 || 10#$port > 65535 )); then
+    usage "port must be an integer 1-65535, got '$port'"
+fi
+port=$((10#$port))
+
+timeout=${SCDEMO_WAIT_TIMEOUT:-60}
+if ! [[ "$timeout" =~ ^[0-9]+$ ]]; then
+    usage "SCDEMO_WAIT_TIMEOUT must be a whole number of seconds, got '$timeout'"
+fi
+
+deadline=$((SECONDS + 10#$timeout))
+while :; do
+    if [ -n "$(ss "$flags" "sport = :$port")" ]; then
+        echo "$prog: $proto port $port is ready"
+        exit 0
+    fi
+    if (( SECONDS >= deadline )); then
+        echo "$prog: timed out after ${timeout}s waiting for $proto port $port" >&2
+        exit 1
+    fi
+    sleep 0.5
+done

@@ -1,0 +1,16 @@
+[Unit]
+Description=scdemo hardware simulator (test stack)
+
+[Service]
+Type=simple
+User=scdemo
+Group=scdemo
+Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=/etc/scdemo/hwsim.env
+ExecStart=/opt/scdemo/venv/bin/scdemo-hwsim
+Restart=on-failure
+RestartSec=5
+LogRateLimitIntervalSec=0
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,9 @@
+[Unit]
+Description=scdemo test stack (sinks, relay, controller)
+Wants=scdemo-sink@1.service scdemo-sink@2.service scdemo-relay.service scdemo-controller.service
+After=scdemo-sink@1.service scdemo-sink@2.service scdemo-relay.service scdemo-controller.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/true
