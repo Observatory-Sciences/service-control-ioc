@@ -261,7 +261,11 @@ class Evaluator:
         spec = self._spec
         services = {sid: self._service(s, inputs) for sid, s in spec.services.items()}
         stack_stopped = all(r.state is _STOPPED for r in services.values())
-        if not stack_stopped:
+        if stack_stopped:
+            # The next start is a fresh one: queued units keep their old
+            # invocation ids, which must not count as "was ready" (rule 3).
+            self._was_ready.clear()
+        else:
             services = {
                 sid: self._unit_stopped(spec.services[sid], r)
                 for sid, r in services.items()
@@ -508,19 +512,21 @@ class Evaluator:
         if state is not _FAULT:
             return _Result(state, detail)
         spec = self._spec
-        server_unit = spec.services[spec.listeners[edge.server].owner].unit
+        server = spec.listeners[edge.server]
+        # Hosts have no unit: look at whichever side is a service.
+        client_unit = None if edge.client_is_host else spec.services[edge.client].unit
+        server_unit = None if server.on_host else spec.services[server.owner].unit
         if not fact.server_present:
+            code = FindingCode.EDGE_SERVER_MISSING
             message = f"server listener {edge.server} missing ({reason})"
-            claim = _Claim(
-                FindingCode.EDGE_SERVER_MISSING, edge.id, (server_unit,), message
-            )
+            look = server_unit or client_unit
         else:
-            look = (
-                server_unit if edge.client_is_host else spec.services[edge.client].unit
-            )
+            code = FindingCode.EDGE_MISSING
             message = "listener present, connection missing"
-            claim = _Claim(FindingCode.EDGE_MISSING, edge.id, (look,), message)
-        return _Result(_FAULT, detail, claim)
+            look = client_unit or server_unit
+        # A fault needs an observable side, so at least one end is a service.
+        assert look is not None
+        return _Result(_FAULT, detail, _Claim(code, edge.id, (look,), message))
 
     # -- findings, overall state and events ---------------------------------
 

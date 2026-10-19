@@ -79,8 +79,14 @@ _SHORT = {
 
 
 def snap(
-    sid: str, state: str = "active", *, since: float = T, **changes: object
+    sid: str,
+    state: str = "active",
+    *,
+    since: float = T,
+    run: int = 1,
+    **changes: object,
 ) -> UnitSnapshot:
+    """A unit snapshot; ``run`` > 1 gives a new invocation id (a later start)."""
     active, sub, job, running = _SHORT[state]
     failed = state in ("failed", "auto-restart")
     base = UnitSnapshot(
@@ -97,7 +103,7 @@ def snap(
         exec_main_start_us=us(since),
         active_enter_us=us(since) if state in ("active", "deactivating") else 0,
         control_group=f"/system.slice/{UNITS[sid]}",
-        invocation_id=f"inv-{sid}",
+        invocation_id=f"inv-{sid}" if run == 1 else f"inv-{sid}-run{run}",
         after=(),
     )
     return replace(base, **changes)
@@ -129,6 +135,7 @@ def scenario(
     *,
     state: str = "active",
     since: float = T,
+    run: int = 1,
     units: Mapping[str, str | UnitSnapshot | None] | None = None,
     up: Iterable[str] = (),
     extra: Iterable[OwnedSock] = (),
@@ -146,7 +153,10 @@ def scenario(
         value = (units or {}).get(sid, state)
         if value is None:
             continue
-        s = value if isinstance(value, UnitSnapshot) else snap(sid, value, since=since)
+        if isinstance(value, UnitSnapshot):
+            s = value
+        else:
+            s = snap(sid, value, since=since, run=run)
         snaps[s.name] = s
     entries = list(extra)
     for i, eid in enumerate(up):
@@ -791,3 +801,91 @@ def test_event_text_formats() -> None:
         "CLEARED listener_missing relay.rep (+5.0 s)",
         "stack ready (+5.0 s)",
     ]
+
+
+# -- fix round 1 regressions -------------------------------------------------
+
+
+def test_host_server_edge_drop_names_client() -> None:
+    ev = running()
+    events = ev.update(scenario(T + 5, up=without("relay -> hw.ctrl")))
+    finding = ev.view().elements["relay -> hw.ctrl"].finding
+    assert finding is not None
+    assert finding.code is FindingCode.EDGE_MISSING
+    assert finding.units == (UNITS["relay"],)
+    assert any(
+        t.startswith("FAULT edge_missing relay -> hw.ctrl: ") for t in texts(events)
+    )
+
+
+def test_stop_then_start_has_no_faults() -> None:
+    ev = running()
+    ev.update(scenario(T + 10, state="stopped"))
+    assert ev.view().overall is OverallState.STOPPED
+    sinks_up = ("sink@1.udp", "sink@1.stats", "sink@2.udp", "sink@2.stats")
+    controller_edges = tuple(e for e in SPEC.edges if e.startswith("controller -> "))
+    relay_up = (*sinks_up, *without(*controller_edges))
+
+    def new(sid: str, state: str, since: float) -> UnitSnapshot:
+        return snap(sid, state, since=since, run=2)
+
+    sinks = {
+        "sink@1": new("sink@1", "active", T + 21),
+        "sink@2": new("sink@2", "active", T + 21),
+    }
+    relay = {**sinks, "relay": new("relay", "active", T + 24)}
+    controller = {**relay, "controller": new("controller", "active", T + 26)}
+    starting = {
+        "sink@1": new("sink@1", "activating", T + 20.5),
+        "sink@2": new("sink@2", "activating", T + 20.5),
+    }
+    steps = [
+        # Start jobs queued: every unit still carries its old invocation id.
+        scenario(T + 20, state="queued"),
+        scenario(T + 20.5, state="queued", units=starting, poll=False),
+        scenario(T + 21, state="queued", units=sinks, poll=False),
+        scenario(T + 22, state="queued", units=sinks, up=sinks_up),
+        scenario(
+            T + 23,
+            state="queued",
+            units={**sinks, "relay": new("relay", "activating", T + 23)},
+            up=sinks_up,
+            poll=False,
+        ),
+        scenario(T + 24, state="queued", units=relay, up=sinks_up, poll=False),
+        scenario(T + 25, state="queued", units=relay, up=relay_up),
+        scenario(T + 26, units=controller, up=relay_up, poll=False),
+        scenario(T + 27, units=controller, up=EVERYTHING),
+    ]
+    events = [e for inputs in steps for e in ev.update(inputs)]
+    assert not [e for e in events if e.kind == "finding" or e.new == "fault"]
+    assert [e.new for e in events if e.kind == "stack" and "post" not in e.text] == [
+        "starting",
+        "ready",
+    ]
+    assert ev.view().t0 == T + 20
+
+
+def test_optional_elements_are_shown_but_not_counted() -> None:
+    controller = replace(SPEC.services["controller"], required=False)
+    http = replace(SPEC.listeners["relay.http"], required=False)
+    edge = replace(SPEC.edges["controller -> relay.http"], required=False)
+    spec = replace(
+        SPEC,
+        services={**SPEC.services, controller.id: controller},
+        listeners={**SPEC.listeners, http.id: http},
+        edges={**SPEC.edges, edge.id: edge},
+    )
+    ev = make(spec, after={})
+    ev.update(
+        scenario(
+            T + 1, units={"controller": "activating"}, up=without("relay.http", edge.id)
+        )
+    )
+    view = ev.view()
+    assert view.elements["controller"].state is waiting
+    assert not view.elements["controller"].required
+    assert view.elements["relay.http"].state is waiting
+    assert view.elements[edge.id].state is waiting
+    assert view.ready
+    assert view.overall is OverallState.READY
