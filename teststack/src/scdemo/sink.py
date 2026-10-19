@@ -106,8 +106,10 @@ async def _bind_stats(
                 if line.strip() == b"PING":
                     writer.write(f"PONG {tracker.count}\n".encode())
                     await writer.drain()
-        except ConnectionError:
-            pass  # the client went away; nothing to answer
+        except (ConnectionError, ValueError):
+            # The client went away, or sent an over-long line (ValueError from
+            # the stream limit): drop it quietly.
+            pass
         finally:
             writers.discard(writer)
             writer.close()
