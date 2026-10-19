@@ -1,8 +1,8 @@
 # qd-service-control: project outline
 
-Status: draft input to the detailed design and plan. It sets out the problem,
-the goals, the main concepts and the architectural direction. The detailed
-design will settle the open questions at the end.
+Status: input to the detailed design and plan. It sets out the problem, the
+goals, the main concepts and the architectural direction. Section 10 records
+the decisions made so far and the items left for the detailed design.
 
 ## 1. Problem
 
@@ -32,12 +32,14 @@ service, or which pair of services, is at fault and which log to read.
 `qd-service-control` must let the end user:
 
 1. **See startup progress.** Watch units start, ports start listening and
-   connections get made, as it happens, from one place and without reading
-   logs.
-2. **Gate the top-level service.** Make sure every sub-service is up, ready
-   and listening, and every required connection is made, *before* the
-   top-level service starts and pushes configuration down. The gate is an
-   actual condition, not a fixed delay.
+   connections get made, as it happens, from one place (EPICS PVs and the
+   service's log output) and without reading every journal.
+2. **Make sure the top-level service is gated.** Every sub-service must be up,
+   ready and listening, and every required connection made, *before* the
+   top-level service starts and pushes configuration down. systemd enforces
+   the order, using readiness gates in the units (Section 5). This tool shows
+   that the order held, and reports clearly when it didn't (for example, the
+   top level started while a dependency's listener was still missing).
 3. **Diagnose faults quickly.** When something isn't working, name the
    service or the service pair (edge) at fault, say which side is the likely
    cause, and point to the journal to read (unit and time window).
@@ -50,17 +52,23 @@ when a running service or connection drops.
 ### In scope
 
 - A **generic core**: a model of systemd services, the ports they listen on
-  and the connections between them, driven by a configuration file. The core
-  knows nothing about Xspress, Odin or EPICS.
+  and the connections between them. It is driven by a YAML configuration file
+  plus the units' own systemd dependencies. The core knows nothing about
+  Xspress, Odin or EPICS.
 - **Observation**: unit state, listening sockets and live connections,
-  mapped to units.
-- **Orchestration**: start, stop and restart a graph of units in dependency
-  order, waiting on readiness conditions rather than delays.
-- **Front-ends** on top of the core: a CLI first, and an EPICS soft IOC
-  adapter for the QD deployment (replacing `odinprocservcontrol` and
-  `procServControl`).
-- **A small test stack**: three well-understood Python services, used to
-  develop and test the core (Section 7).
+  mapped to units, and the events when any of them change.
+- **Control**: start, stop and restart a unit or a group target, each as a
+  single systemd job. systemd does the ordering.
+- **One front-end: a long-running pythonSoftIOC service.** It publishes the
+  model's state and controls as Channel Access PVs, and logs every event
+  through Python `logging`. There is no interactive CLI. The terminal or
+  journal shows the log output.
+- **Strict PV compatibility** with `odinprocservcontrol` and the patched
+  `procServControl`, with new PVs for services, listeners and edges added
+  alongside the existing ones.
+- **A small test stack**: three (or more) well-understood Python services and
+  their units, used to develop the tool and to try out the gating patterns
+  that the Xspress units use (Section 7).
 
 ### Out of scope (for now)
 
@@ -68,27 +76,30 @@ when a running service or connection drops.
   validation target only (Section 9).
 - Multi-host stacks. The core assumes one host; remote peers (for example,
   detector cards) show up only as IP addresses.
-- Replacing systemd's own supervision (restart policies, cgroups, journald).
+- Ordering or orchestrating starts itself. That's systemd's job, as are
+  supervision, restart policies and propagation (`Restart=`, `PartOf=`,
+  `BindsTo=`), cgroups and journald.
+- Generating or installing unit files or drop-ins.
 - RPM packaging. That belongs in `qd-rpm-build`, and any change there is
   proposed first.
 
 ## 4. Concepts
 
-The configuration describes a directed graph:
+The model is a directed graph:
 
-| Concept         | Meaning                                                                                                                                                                   |
-| --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Service**     | One systemd unit (including template instances such as `foo@1.service`). It has dependencies, readiness conditions and the listeners it owns.                            |
-| **Listener**    | A socket a service is expected to own: protocol (`tcp`/`udp`), port, and optionally a bind address. TCP: in `LISTEN` state. UDP: bound.                                     |
-| **Edge**        | An expected connection from a client service to a server's listener: `client -> server:port/proto`. Edges can be required or optional.                                 |
-| **Dependency**  | "B needs A ready before B starts". Usually follows the edges, but is declared separately, since not every edge implies a startup order (ZMQ, for example, reconnects). |
-| **Readiness**   | The conditions under which a service counts as ready: unit active, listeners present, required outgoing edges established, plus optional extra checks.                    |
-| **Group**       | A named set of services that can be started, stopped or watched together, such as "the whole stack" or "data path, card 2".                                              |
+| Concept        | Meaning                                                                                                                                                                                                                   | Source                                    |
+| -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------- |
+| **Service**    | One systemd unit (including template instances such as `foo@1.service`) that the tool monitors.                                                                                                                         | YAML config                               |
+| **Dependency** | "B starts after A". Read from the units' `After=`/`Requires=`/`Wants=` over D-Bus. Never declared twice.                                                                                                                | systemd                                   |
+| **Listener**   | A socket a service is expected to own: protocol (`tcp`/`udp`), port, and optionally a bind address. TCP: in `LISTEN` state. UDP: bound.                                                                                 | YAML config                               |
+| **Edge**       | An expected connection from a client service to a server's listener: `client -> server:port/proto`. Edges can be required or optional. Edges are transport-level only: an edge is up when TCP is `ESTABLISHED`, and UDP edges are best effort (Section 5). | YAML config                               |
+| **Readiness**  | When a service counts as ready: unit active (for `Type=notify` units this means it has sent `READY=1`), its listeners present, its required outgoing edges up, and any configured file-exists checks satisfied.        | YAML config + systemd                     |
+| **Group**      | A named set of services that can be controlled or watched together, usually a systemd target such as `qd-xspress-all`.                                                                                                 | YAML config (often a target in systemd)   |
 
 Every element (service, listener, edge) has a state that changes over time,
 for example `unknown → waiting → ready`, or `ready → degraded/failed`. Each
-change is a timestamped **event**. The stream of events is what the front-ends
-show, and what the orchestrator waits on.
+change is a timestamped **event**. The stream of events is what gets logged
+and published as PVs.
 
 The graph can be a chain or a hierarchy (a DAG). For the QD stack, the
 configuration also has to describe **parameterised instances**: N frame
@@ -99,42 +110,69 @@ detector is attached.
 ## 5. Architecture
 
 ```
-          configuration file (services, listeners, edges, dependencies, readiness)
-                                   │
-                                   ▼
+   YAML config (services, listeners, edges,        systemd unit dependencies
+   readiness checks, groups)                       (After=/Requires=/Wants=, via D-Bus)
+                 │                                              │
+                 └──────────────────────┬───────────────────────┘
+                                        ▼
 ┌───────────────────────────────── core ──────────────────────────────────┐
 │                                                                         │
-│  observers ──────────────▶ state model ──────▶ event stream ──┐         │
-│   • systemd unit state       (graph + live      (timestamped  │         │
-│     (D-Bus)                   state per          changes)     │         │
-│   • sockets → units           element)                        │         │
-│     (/proc or sock_diag,                                      │         │
-│      cgroup mapping)                                          ▼         │
-│   • extra readiness checks             orchestrator ◀── waits on state  │
-│                                         (start/stop/restart in order,   │
-│                                          via systemd D-Bus jobs)        │
-│                                        diagnoser (fault → service/edge  │
-│                                          → likely side → journal ref)   │
-└─────────────────────────────────────────────────────────────────────────┘
-          │                         │                           │
-          ▼                         ▼                           ▼
-     CLI: status / watch       readiness gate CLI          EPICS soft IOC adapter
-     / start / stop / diagnose (for ExecStartPre= in        (PVs, replaces
-                                the top-level unit)          odinprocservcontrol)
+│  observers ─────────────▶ state model ──────▶ event stream ────┐        │
+│   • unit state: systemd    (graph + live       (timestamped    │        │
+│     D-Bus signals           state per           changes)       │        │
+│   • sockets → processes    element)                            │        │
+│     → units: D-Bus where      │                                │        │
+│     possible, else /proc,     ▼                                │        │
+│     else sock_diag         diagnoser (fault → service/edge     │        │
+│   • file-exists checks       → likely side → journal ref)      │        │
+│                                                                │        │
+│  control: start/stop/restart unit or group as one systemd job  │        │
+└───────────────────────────────▲────────────────────────────────┼────────┘
+                                │                                │
+                  ┌─────────────┴────────────────────────────────▼───────┐
+                  │  pythonSoftIOC service                               │
+                  │   • PVs: compat (odinprocservcontrol/procServControl)│
+                  │     + services, listeners, edges, stack-ready        │
+                  │   • control PVs → core control                       │
+                  │   • Python logging of every event → stdout/journald  │
+                  └──────────────────────────────────────────────────────┘
 ```
 
 Key points:
 
 - **asyncio throughout**, matching `softioc`, `aioca` and `dbus-fast`.
   Python 3.11 on EL9 x86_64; developed on macOS.
-- **systemd stays the process supervisor.** The tool starts and stops units
-  through the systemd Manager D-Bus API and tracks each job. It never forks
-  the services itself.
-- **Observation is passive.** Sockets are inspected from the kernel's tables.
-  The tool never connects to a port to probe it, so ZMQ and other protocols
-  see no stray clients (the same principle as `qd-wait-for-port`).
-- **Sockets are mapped to units by cgroup** (`/proc/<pid>/cgroup`), the same
-  as `qd-check-connections`. A remote peer is shown by its IP address.
+- **systemd owns ordering and supervision.** The units' `After=` and
+  readiness gates (`ExecStartPost=` wait helpers, or `Type=notify`) decide
+  when a dependent may start. The tool reads those dependencies and observes
+  the results. Its controls are single systemd jobs (start, stop, restart of a
+  unit or group target). It never forks services or runs steps in its own
+  order.
+- **No subprocesses.** Everything is read in-process:
+  - the systemd D-Bus API first, using subscriptions and `PropertiesChanged`
+    signals wherever they fit;
+  - then the `/proc` filesystem;
+  - netlink `sock_diag` as the last resort.
+
+  systemd's D-Bus API gives unit state, PIDs and dependencies. It doesn't say
+  which ports a service unit listens on or what it's connected to, so
+  listeners and edges are expected to come from `/proc`. The design settles
+  each signal's mechanism.
+- **Observation is passive.** Sockets are read from the kernel's tables. The
+  tool never connects to a port to probe it, so ZMQ and other protocols see no
+  stray clients (the same principle as `qd-wait-for-port`).
+- **Sockets are mapped to units by cgroup**, the same as
+  `qd-check-connections`. A remote peer is shown by its IP address.
+- **Socket state is polled every 1 s.** Unit state is event-driven.
+- **UDP edges are best effort.** An edge needs the receiver bound and the
+  sender holding a UDP socket. If the sender `connect()`s, the edge is
+  matched precisely by its peer address. Otherwise it is reported as "sender
+  socket present". A traffic check is not part of the core.
+- **The tool runs as the same user as the stack** (`xspress` for QD), so it
+  can see the stack's processes and sockets without extra capabilities. A
+  polkit rule, limited to the configured units, allows its systemd control
+  jobs. Sockets owned by other users' processes can't be attributed to a
+  unit and are reported as external.
 - **Diagnosis is a reading of the state model**, not a separate check. The
   rules include:
   - Unit not active: look at that unit.
@@ -142,41 +180,42 @@ Key points:
   - Listener present but an edge is missing: look at the client side, or its
     configuration.
   - Unit restarting repeatedly: look at its last exit status.
+  - A dependent became active before its dependency was ready: the gating
+    is wrong.
 
   Each finding names the unit or units and gives a `journalctl -u … --since …`
-  reference.
-- **The gate must not be bypassable by accident.** If the orchestrator alone
-  enforces "sub-services ready before top-level", then a plain
-  `systemctl start top` skips it. So the same readiness check is available as
-  a CLI (`… wait <service>`) to run as `ExecStartPre=` in the top-level unit,
-  generalising `qd-wait-for-port` from "one port" to "this part of the graph
-  is ready". The orchestrator and the gate share one implementation.
-- **Front-ends only consume the core.** The core has no EPICS dependency. The
-  IOC adapter maps services, edges and events to PVs, and START/STOP/RESTART
-  PVs to orchestrator calls.
+  reference for the user to follow.
+- **The IOC only consumes the core.** The core has no EPICS dependency. The
+  IOC maps services, edges and events to PVs, and control PVs to core control
+  calls.
 
 ## 6. User-facing behaviour (indicative)
 
-- `status`: one table of services, listeners and edges, with their states.
-- `watch`: a live view that streams events as the stack starts, for example
-  "relay.service active (1.2 s)", "relay :5555/tcp listening (2.0 s)",
-  "controller → relay:5555/tcp established (3.4 s)".
-- `start|stop|restart <service|group>`: an ordered operation with progress.
-  It finishes with success, or with a diagnosis naming what failed.
-- `wait <service|group> [--timeout]`: blocks until ready. Exits non-zero with
-  a diagnosis on timeout. Used as a systemd gate.
-- `diagnose`: the current faults, each with its likely side and journal
-  reference.
-- The EPICS adapter exposes the same information: per-service and per-edge
-  state, an overall "stack ready" PV, a recent-events/message PV, and control
-  PVs.
+- **Log output** (stdout, so it goes to the journal under systemd): one line
+  per event, with consistent fields. For example:
+  - `relay.service active (1.2 s)`
+  - `relay :5555/tcp listening (2.0 s)`
+  - `edge controller -> relay:5555/tcp established (3.4 s)`
+  - `FAULT edge controller -> relay:5555/tcp missing: listener present, look at controller (journalctl -u controller --since 10:41:02)`
+- **Compatibility PVs**: the existing `odinprocservcontrol` and
+  `procServControl` PVs, with the same names and semantics, so the existing
+  EDM screens and scripts keep working. Their START/STOP/RESTART map to
+  systemd jobs.
+- **New PVs** alongside them:
+  - per service: unit state, ready flag, restart count;
+  - per listener and per edge: state;
+  - an overall "stack ready" PV;
+  - current faults and a recent-events message PV.
 
 ## 7. Development test stack
 
-Development and most testing use a small stack of three Python services that
-we write ourselves. It exercises the same situations as the QD stack: a ZMQ
-control link, a UDP data link, startup in dependency order, and a top-level
-service that pushes configuration down.
+Development and most testing use a small stack of Python services that we
+write ourselves. It exercises the same situations as the QD stack:
+
+- a ZMQ control link and a UDP data link;
+- startup in dependency order;
+- a top-level service that pushes configuration down;
+- the same gating patterns the Xspress units use.
 
 ```mermaid
 flowchart LR
@@ -184,135 +223,154 @@ flowchart LR
     R -- "UDP datagrams" --> S["sink (bottom)"]
 ```
 
-Start order is **sink → relay → controller**. Stop order is the reverse.
+Start order is **sink → relay → controller**, set by `After=` in the units.
+Stop order is the reverse.
 
-| Service        | Role                                                                                                                                                         | Listens on                  | Ready when                                                         |
-| -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ | --------------------------- | ------------------------------------------------------------------ |
-| **sink**       | Lowest level. Receives datagrams and counts them, checking sequence numbers for gaps.                                                                        | UDP port (bound)            | Unit active and UDP port bound.                                    |
-| **relay**      | Middle. Serves a ZMQ control socket. Once configured, sends datagrams to sink.                                                                               | ZMQ TCP port (`LISTEN`)     | Unit active, ZMQ port listening, UDP sender socket to sink exists. |
-| **controller** | Top level. Connects to relay over ZMQ, pushes a configuration and checks the reply, then polls status. Stands in for the IOC that reconfigures odin-control. | none (client only)          | Unit active, edge to relay established, configuration acknowledged. |
+| Service        | Role                                                                                                                                                         | Listens on              |
+| -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------- |
+| **sink**       | Lowest level. Receives datagrams and counts them, checking sequence numbers for gaps.                                                                        | UDP port (bound)        |
+| **relay**      | Middle. Serves a ZMQ control socket. Once configured, sends datagrams to sink.                                                                               | ZMQ TCP port (`LISTEN`) |
+| **controller** | Top level. Connects to relay over ZMQ, pushes a configuration and checks the reply, then polls status. Stands in for the IOC that reconfigures odin-control. | none (client only)      |
 
-The UDP direction (relay sends, sink receives) is an assumption to confirm. It
-mirrors control flowing down and data flowing to the data-path service.
+**Gating.** One purpose of the test stack is to try out and verify the gating
+used in the Xspress units:
+
+- at least one unit is gated by `ExecStartPost=` with `qd-wait-for-port` or
+  a similar helper, so `After=` means "listening";
+- at least one service is `Type=notify` and sends `READY=1` itself once it
+  is ready.
+
+More services can be added where a pattern needs one. For example, a
+shared-memory producer/consumer pair would exercise the
+`qd-wait-for-fr-buffer` file gate.
 
 The test services must have:
 
 - **Clear, structured logging to stdout/journald**: every state transition
   (binding, bound, connecting, connected, configured, first datagram, gap
   detected, shutdown), with consistent fields so log lines can be matched to
-  events from the tool.
-- **Configurable timing**, such as a delay before binding or before
-  connecting, so startup progress is slow enough to watch and the gating
-  logic is really exercised.
+  the tool's events.
+- **Configurable timing**, such as a delay before binding, before connecting,
+  or before notifying ready, so startup progress is slow enough to watch and
+  the gates are really exercised.
 - **Fault injection** (by option or environment variable), so every
   diagnosis path can be reproduced on demand:
   - fail to bind, or bind the wrong port;
   - exit or crash after N seconds;
   - never connect, or connect to the wrong port;
   - stop sending datagrams;
-  - become ready slowly, beyond the timeout;
+  - become ready slowly, beyond the gate's timeout;
+  - never send `READY=1`;
   - ignore the configuration push;
   - spin at 100% CPU.
 - **systemd units** with names outside `qd-*` (for example, `scdemo-*`), so
-  they never clash with the QD helpers that act on every `qd-*` unit.
-  Initially they are `Type=simple`, with no `sleep` gates, so the tool does
-  the gating.
-- **A configuration file for the tool describing this stack**: the first,
+  they never clash with the QD helpers that act on every `qd-*` unit. They
+  run as a dedicated service user, and the tool runs as that user too.
+- **A YAML configuration for the tool describing this stack**: the first,
   and reference, example of the configuration format.
 
 ## 8. Testing approach
 
-- **Unit tests on macOS**: config parsing, graph and ordering, state
-  transitions, diagnosis rules. They run against fake observers and a fake
-  systemd, so no Linux is needed.
-- **Socket and cgroup parsing**: tests against captured `/proc` and `ss`
-  fixtures from EL9.
-- **Integration on Linux** with real systemd, D-Bus, polkit and journald:
-  install the test stack and the tool, then run every startup and
-  fault-injection scenario and check the reported events and diagnoses. The
-  target is the shared test VM (`test-vm`, using dev unit names
-  and a dev PV prefix), or a local systemd container (see open questions).
+- **Unit tests on macOS**: config parsing, graph building from (faked) unit
+  dependencies, state transitions, diagnosis rules, PV mapping. They run
+  against fake observers and a fake systemd, so no Linux is needed.
+- **`/proc` and cgroup parsing**: tests against fixtures captured from EL9.
+- **Local integration**: a Rocky 9 container with systemd as PID 1 under
+  Rancher Desktop. It runs the test stack, its gates and the IOC, and goes
+  through every startup and fault-injection scenario, checking the logged
+  events, PVs and diagnoses. On this Mac the container is aarch64, which is
+  fine for pure-Python code.
+- **Target integration**: the shared VM `test-vm` (x86_64, with
+  the real QD stack installed), using dev unit names and a dev PV prefix.
 
 ## 9. Applying it to the QD Xspress stack (later)
 
 When the core works against the test stack, an Xspress configuration will
-describe the real stack:
+describe the real stack's listeners and edges:
 
 - FR/FP pairs per card, with computed ports;
 - odin-control, meta-writer and live-view-merge;
 - xspress-control, plus the hardware edges when a detector is attached;
 - the IOC as the top-level service.
 
-That configuration then replaces:
+The dependencies come from the installed units.
 
-- the fixed `sleep` gates;
-- the per-unit `qd-wait-for-port` gates (or wraps them);
-- `qd-check-connections`, whose expected-edge list becomes the edges in the
+The IOC then:
+
+- replaces `odinprocservcontrol` and `procServControl`, keeping their PVs
+  (strict compatibility) so the existing EDM screens work;
+- provides continuous monitoring in place of the one-shot
+  `qd-check-connections`, whose expected-edge list becomes the edges in the
   configuration;
-- `odinprocservcontrol` and `procServControl`, through the EPICS adapter,
-  keeping or improving on their PVs and EDM screens.
+- reports on whether the units' gates hold.
 
-The packaging changes this needs in `qd-rpm-build` will be proposed
-separately.
+What the test stack shows about gating (for example, whether some
+`qd-wait-for-port` gates or `sleep` waits should become `Type=notify` or a
+better helper) feeds into change proposals for the `qd-rpm-build` units.
+Those proposals, and the packaging of this tool, are made separately.
 
-## 10. Open questions for the detailed design
+## 10. Decisions and design-time items
 
-1. **Who enforces the order: the tool, systemd, or both?** Options:
-   - The tool drives each start and wait.
-   - systemd ordering does it, with `wait` gates, and the tool only observes
-     and reports.
-   - A hybrid: gates in the units for safety, and the tool for orchestration
-     and progress.
+### Decisions
 
-   The leaning is the hybrid, with one shared readiness check (Section 5).
-2. **What counts as a UDP edge?** UDP has no connection state. If the sender
-   calls `connect()`, its socket shows a peer address. If it doesn't, nothing
-   links sender to receiver in the kernel tables. Per-socket traffic counters
-   are limited (drops and queue lengths only). Options:
-   - require senders to `connect()`;
-   - accept "listener bound + sender socket exists" as the edge;
-   - have services report traffic counters themselves (a convention the
-     generic core can't rely on for third-party services).
-3. **ZMQ semantics.** A ZMQ client can connect before the server binds, and
-   it reconnects silently. A TCP connection being established shows the
-   transport is up, not that the application handshake worked. Is
-   transport-level enough, or do some edges need an application-level check
-   (like the controller's "configuration acknowledged")?
-4. **Extra readiness checks: which kinds, and how pluggable?** Candidates:
-   - a file exists (such as the FR shared-memory buffer);
-   - `sd_notify` `READY=1` (`Type=notify`);
-   - a command exits 0;
-   - a journal line matches.
-5. **Configuration format.** TOML (read with `tomllib` from the 3.11 standard
-   library, no extra dependency) or YAML. How should instance templating and
-   conditional edges be expressed?
-6. **Socket inspection method and privileges.** The options are parsing
-   `/proc/net/*` plus `/proc/<pid>/fd`, using netlink `sock_diag`, or shelling
-   out to `ss -p`. Seeing other users' sockets needs root or
-   `CAP_SYS_PTRACE`/`CAP_NET_ADMIN`. Unit control needs a polkit rule. Which
-   user does the tool run as?
-7. **Stop and restart semantics.** When a sub-service restarts, should its
-   dependents be restarted too, or reconfigured (for example, the top level
-   re-pushing configuration), or left to reconnect? Is that set per edge or
-   per dependency in the configuration?
-8. **Polling vs events.** Unit state is event-driven over D-Bus. Socket state
-   is polled. What poll interval gives responsive progress at negligible CPU
-   cost?
-9. **Linux integration environment.** Is the shared VM enough, or do we also
-   want a local EL9 container with systemd as PID 1 (Rancher Desktop) for
-   faster iteration?
-10. **Front-end priority.** Should the CLI's `watch` be plain streaming lines,
-    a full-screen TUI, or both? When does the EPICS adapter come relative to
-    the core?
+| #   | Topic                       | Decision                                                                                                                                                                                                                                                           |
+| --- | --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| D1  | Start ordering              | systemd enforces it (`After=` plus readiness gates in the units). The tool observes, reports and diagnoses, and doesn't orchestrate.                                                                                                                              |
+| D2  | Dependency graph            | Read from systemd (`After=`/`Requires=`/`Wants=`) over D-Bus. The tool's configuration adds only listeners, edges, readiness checks and groups.                                                                                                                   |
+| D3  | Controls                    | Start/stop/restart of a unit or group target, as a single systemd job each. Restart propagation is systemd's (`PartOf=`, `BindsTo=`, `Restart=`).                                                                                                                 |
+| D4  | Configuration format        | YAML.                                                                                                                                                                                                                                                              |
+| D5  | UDP edges                   | Socket-level, best effort: receiver bound and a sender socket present, matched by peer address when the sender `connect()`s.                                                                                                                                      |
+| D6  | TCP/ZMQ edges               | Transport level only: up when `ESTABLISHED`. There are no application-level checks in the core.                                                                                                                                                                  |
+| D7  | Extra readiness checks (v1) | File exists (optionally non-empty), and `Type=notify` `READY=1` (unit active). No command or journal-match checks.                                                                                                                                                 |
+| D8  | Observation mechanisms      | No subprocesses. D-Bus (subscriptions/signals) first, then `/proc`, then netlink `sock_diag`. The design picks each signal's mechanism.                                                                                                                         |
+| D9  | Socket polling              | Fixed 1 s interval. Unit state is event-driven.                                                                                                                                                                                                                  |
+| D10 | Privileges                  | Runs as the same user as the stack (`xspress` for QD). A polkit rule allows its control jobs.                                                                                                                                                                   |
+| D11 | Front-end                   | A pythonSoftIOC service publishing PVs over Channel Access, plus Python `logging` of every event. No interactive CLI.                                                                                                                                             |
+| D12 | PV interface                | Strict compatibility with the `odinprocservcontrol` and `procServControl` PVs, with new PVs added alongside.                                                                                                                                                     |
+| D13 | Test stack                  | sink ← relay ← controller. UDP flows relay → sink, ZMQ runs controller → relay. Gating uses `qd-wait-for-port`-style helpers and at least one `Type=notify` service. More services can be added when a pattern needs one.                                         |
+| D14 | Integration environments    | A local Rocky 9 systemd container (Rancher Desktop) plus the shared VM `test-vm`.                                                                                                                                                                      |
+
+### For the detailed design
+
+1. **Mechanism for each signal** (D8): which systemd D-Bus properties and
+   signals to use for unit state, `MainPID`/cgroup and dependencies, and how
+   to read listeners and edges from `/proc`. When is `sock_diag` needed?
+2. **Journal references without subprocesses.** Diagnosis gives a
+   `journalctl` reference for the user. If the tool needs to read journal
+   lines itself, how does it do that? EL9's `python3-systemd` targets Python
+   3.9, not 3.11. Reading the journal as `xspress` also needs
+   `systemd-journal` group membership.
+3. **Compatibility PV inventory** (D12): the full list of
+   `odinprocservcontrol` and patched `procServControl` PVs and their
+   semantics. How do procServ-specific PVs (console, procServ status, auto
+   restart) map onto systemd units? Which have no sensible equivalent?
+4. **New PV layout**: naming for per-service, per-listener and per-edge PVs,
+   and how a variable number of instances and edges maps to a fixed IOC
+   record set.
+5. **YAML schema**: services, listeners, edges, file checks and groups;
+   instance templating (N cards, computed ports); conditional edges
+   (hardware present); validation and error reporting.
+6. **Which services are gated how in the test stack**: which units use
+   `ExecStartPost=` wait helpers, and which uses `Type=notify`.
+   `qd-wait-for-port` checks TCP only (`ss -ltn`), so how is a UDP listener
+   (sink) gated? How do the helpers get into the local container (installed
+   from the `qd-*` RPMs, or a dev copy)?
+7. **Gate-violation detection**: how to tell reliably from events and
+   timestamps that a dependent started before its dependency was ready.
+8. **polkit rule** for the control jobs, scoped to the configured units, and
+   where it's installed (test stack vs. QD packaging).
+9. **systemd container setup** for local integration: base image, D-Bus,
+   journald, and running the test units and the IOC inside it.
 
 ## 11. Indicative phases
 
-1. Test stack: the three services, their logging and fault injection, and
-   their units.
-2. Core model, configuration format and observers. CLI `status` and `watch`.
-3. Orchestrator and readiness gate. CLI `start`/`stop`/`restart`/`wait`.
-4. Diagnosis rules and journal references. CLI `diagnose`. Fault-injection
-   integration tests.
-5. EPICS soft IOC adapter.
-6. Xspress configuration and validation on the test VM. Packaging proposal for
-   `qd-rpm-build`.
+1. Test stack: the three services, their logging and fault injection, their
+   units and gates (wait helper and `Type=notify`), and the local systemd
+   container.
+2. Core model, YAML configuration, dependency reading from systemd, and
+   observers. Event logging.
+3. Diagnosis rules (including gate violations), journal references, and
+   fault-injection integration tests.
+4. The soft IOC: compatibility PVs, new PVs and controls.
+5. Xspress configuration and validation on the test VM. Proposals for
+   `qd-rpm-build` (gating changes, packaging).
