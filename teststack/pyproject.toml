@@ -1,0 +1,19 @@
+[project]
+name = "scdemo"
+version = "0.1.0"
+description = "Demo stack of fake services for testing qd-service-control"
+requires-python = ">=3.11"
+dependencies = [
+    "pyzmq>=27.2.0",
+]
+
+[project.scripts]
+scdemo-sink = "scdemo.sink:main"
+scdemo-relay = "scdemo.relay:main"
+scdemo-controller = "scdemo.controller:main"
+scdemo-hwsim = "scdemo.hwsim:main"
+scdemo-dropin = "scdemo.dropin:main"
+
+[build-system]
+requires = ["uv_build>=0.13.1,<0.14.0"]
+build-backend = "uv_build"

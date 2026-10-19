@@ -17,13 +17,16 @@ build-backend = "uv_build"
 
 [dependency-groups]
 dev = [
+    "pytest>=9.1.1",
+    "pytest-asyncio>=1.4.0",
     "ruff==0.17.1",
+    "scdemo",
     "ty==0.0.89",
 ]
 
 [tool.ruff]
 # target-version comes from requires-python.
-src = ["src", "tests"]
+src = ["src", "tests", "teststack/src", "teststack/tests"]
 
 [tool.ruff.lint]
 # Ruff's default set already covers most asyncio pitfalls (ASYNC1xx/2xx
@@ -47,6 +50,7 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["ANN"]
+"teststack/tests/**" = ["ANN"]
 
 [tool.ty.environment]
 # Developed on macOS, deployed on EL9: check against Linux stubs.
@@ -54,3 +58,15 @@ python-platform = "linux"
 
 [tool.ty.terminal]
 error-on-warning = true
+
+[tool.uv.workspace]
+members = ["teststack"]
+
+[tool.uv.sources]
+scdemo = { workspace = true }
+
+[tool.pytest.ini_options]
+testpaths = ["tests", "teststack/tests"]
+asyncio_mode = "strict"
+filterwarnings = ["error"]
+addopts = "--import-mode=importlib"
