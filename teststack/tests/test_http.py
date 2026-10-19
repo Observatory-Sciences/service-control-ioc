@@ -206,3 +206,23 @@ async def test_http_client_connect_refused(port_base):
     with pytest.raises(ConnectionRefusedError):
         await client.get_json("/status")
     await client.close()
+
+
+@pytest.mark.asyncio
+async def test_http_client_overlong_status_line_is_http_error(port_base):
+    """A peer streaming bytes with no newline: HttpError, not ValueError."""
+
+    async def handle(r: asyncio.StreamReader, w: asyncio.StreamWriter) -> None:
+        await r.readline()
+        w.write(b"x" * (128 * 1024))  # over the 64 KiB stream limit, no newline
+        with contextlib.suppress(ConnectionError):
+            await w.drain()
+            await r.read()
+        w.close()
+
+    server = await asyncio.start_server(handle, "127.0.0.1", port_base + 104)
+    async with server:
+        client = HttpClient("127.0.0.1", port_base + 104)
+        with pytest.raises(HttpError, match="status line"):
+            await client.get_json("/status")
+        await client.close()

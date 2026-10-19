@@ -36,7 +36,14 @@ STATUS_TIMEOUT: Final = 1.0  # per DEALER or HTTP status request
 MAX_STATUS_TIMEOUTS: Final = 3  # in a row, then configure again
 STATUS_LOG_PERIOD: Final = 5.0
 _MONITOR_EVENTS: Final = zmq.EVENT_CONNECTED | zmq.EVENT_DISCONNECTED
-_LINK_ERRORS: Final = (OSError, HttpError, TimeoutError, asyncio.IncompleteReadError)
+# ValueError: an over-long line from a peer that is not speaking our HTTP.
+_LINK_ERRORS: Final = (
+    OSError,
+    HttpError,
+    TimeoutError,
+    asyncio.IncompleteReadError,
+    ValueError,
+)
 
 
 @dataclass(frozen=True, slots=True)

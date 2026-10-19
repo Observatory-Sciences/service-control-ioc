@@ -136,6 +136,10 @@ async def test_http_holds_one_connection_and_status_is_rate_limited(port_base):
         assert _count(s.relay, "connected", name="http-client") == 1
         assert _count(s.controller, "connected", name="http") == 1
         assert _count(s.controller, "disconnected", name="http") == 0
+        # Steady state: DEALER status answered every poll, so no reconfigure.
+        assert _count(s.controller, "configuring") == 1
+        assert _count(s.controller, "config_timeout") == 0
+        assert int(second["ticks"]) > 0  # the SUB drain sees the relay's ticks
         await _assert_clean_exit(s.controller)
 
 
@@ -185,6 +189,35 @@ async def test_three_status_timeouts_trigger_reconfigure(port_base):
         assert _count(ctrl, "ready") == 1
         await _assert_clean_exit(ctrl)
         answer.cancel()
+
+
+@pytest.mark.asyncio
+async def test_controller_survives_http_peer_without_newlines(port_base):
+    """An HTTP peer that streams bytes with no newline must not kill a poll."""
+    accepted = 0
+    changed = asyncio.Condition()
+
+    async def handle(r: asyncio.StreamReader, w: asyncio.StreamWriter) -> None:
+        nonlocal accepted
+        async with changed:
+            accepted += 1
+            changed.notify_all()
+        with contextlib.suppress(ConnectionError):
+            w.write(b"x" * (128 * 1024))  # over the 64 KiB limit, no newline
+            await w.drain()
+            await r.read()
+        w.close()
+
+    server = await asyncio.start_server(handle, "127.0.0.1", port_base + 104)
+    async with (
+        server,
+        ServiceProc("controller", port_base, SCDEMO_FAULT_NO_CONNECT="req") as ctrl,
+    ):
+        async with asyncio.timeout(10), changed:
+            await changed.wait_for(lambda: accepted >= 3)  # three polls lived
+        assert ctrl.returncode is None
+        assert _count(ctrl, "connected", name="http") == 0
+        await _assert_clean_exit(ctrl)
 
 
 @pytest.mark.asyncio

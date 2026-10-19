@@ -237,7 +237,10 @@ class HttpClient:
             f"GET {path} HTTP/1.1\r\nHost: {self.host}:{self.port}\r\n\r\n".encode()
         )
         await writer.drain()
-        status_line = await reader.readline()
+        try:
+            status_line = await reader.readline()
+        except ValueError as err:  # over the stream limit with no newline
+            raise HttpError(f"bad status line: {err}") from err
         if not status_line:
             raise asyncio.IncompleteReadError(b"", None)
         parts = status_line.decode("ascii", errors="replace").split(maxsplit=2)
