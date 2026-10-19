@@ -273,7 +273,7 @@ def test_clean_start_goes_ready_without_faults() -> None:
         ),
     ]
     events = [e for inputs in steps for e in ev.update(inputs)]
-    assert not [e for e in events if e.kind == "finding" or e.new == "fault"]
+    assert not [e for e in events if e.kind in ("finding", "gate") or e.new == "fault"]
     assert [e.new for e in events if e.kind == "stack" and "post" not in e.text] == [
         "stopped",
         "starting",
@@ -858,7 +858,7 @@ def test_stop_then_start_has_no_faults() -> None:
         scenario(T + 27, units=controller, up=EVERYTHING),
     ]
     events = [e for inputs in steps for e in ev.update(inputs)]
-    assert not [e for e in events if e.kind == "finding" or e.new == "fault"]
+    assert not [e for e in events if e.kind in ("finding", "gate") or e.new == "fault"]
     assert [e.new for e in events if e.kind == "stack" and "post" not in e.text] == [
         "starting",
         "ready",

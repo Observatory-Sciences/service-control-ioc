@@ -2,7 +2,9 @@
 
 Pure: time only ever comes from ``Inputs.now``. ``update`` composes small rule
 functions (spec Sections 5.1-5.3, 5.5); the result of each rule is a
-``_Result`` whose optional ``_Claim`` becomes a held ``Finding``.
+``_Result`` whose optional ``_Claim`` becomes a held ``Finding``. Gate
+violations (spec Section 5.4) come from ``GateTracker`` in ``model.gate``:
+they are findings and ``gate`` events but never change a state.
 """
 
 from collections.abc import Iterable, Mapping
@@ -18,6 +20,7 @@ from qd_service_control.config.spec import (
     StackSpec,
 )
 from qd_service_control.model.deps import DependencyGraph
+from qd_service_control.model.gate import GateTracker, GateUpdate
 from qd_service_control.model.types import (
     ElementState,
     ElementView,
@@ -144,6 +147,19 @@ def _edge_missing_detail(edge: EdgeSpec, fact: EdgeFact) -> str:
     return "no sender socket"
 
 
+def _look(finding: Finding) -> str:
+    """``<message>, look at <units> (journalctl ...)`` for FAULT and GATE lines."""
+    units = ", ".join(finding.units)
+    return f"{finding.message}, look at {units} ({finding.journal_ref})"
+
+
+def _cleared_event(finding: Finding, now: float, t: str) -> Event:
+    text = f"CLEARED {finding.code} {finding.element} {t}"
+    return Event(
+        now, "cleared", finding.element, finding.code.value, None, text, finding
+    )
+
+
 class Evaluator:
     """Applies the state, fault and finding rules to each new set of inputs."""
 
@@ -169,6 +185,7 @@ class Evaluator:
         self._activating_since: dict[str, float] = {}
         self._was_ready: dict[str, tuple[str, ...]] = {}  # id -> invocation key
         self._meta = self._build_meta(spec)
+        self._gate = GateTracker(spec)
 
     @staticmethod
     def _build_meta(spec: StackSpec) -> dict[str, _Meta]:
@@ -194,7 +211,14 @@ class Evaluator:
         self._remember_ready(results, inputs)
         claims = [r.claim for r in results.values() if r.claim is not None]
         findings = self._hold(claims, inputs.now)
-        return self._publish(results, findings, inputs)
+        gate = self._gate.update(
+            inputs.now,
+            inputs.units if inputs.bus_connected else None,
+            inputs.poll_time if inputs.sockets is not None else None,
+            {eid: r.state for eid, r in results.items()},
+            self._graph,
+        )
+        return self._publish(results, findings, gate, inputs)
 
     def view(self) -> StackView:
         return StackView(
@@ -204,7 +228,7 @@ class Evaluator:
             since=self._overall_since,
             t0=self._t0,
             elements=dict(self._elements),
-            findings=tuple(self._findings.values()),
+            findings=(*self._findings.values(), *self._gate.findings),
             units=self._units,
             cpu=self._cpu,
         )
@@ -549,6 +573,7 @@ class Evaluator:
         self,
         results: Mapping[str, _Result],
         findings: Mapping[tuple[FindingCode, str], Finding],
+        gate: GateUpdate,
         inputs: Inputs,
     ) -> list[Event]:
         now = inputs.now
@@ -574,26 +599,11 @@ class Evaluator:
             events.append(
                 Event(now, view.kind, eid, old, view.state.value, text, view.finding)
             )
-        for key, finding in self._findings.items():
-            if key not in findings:
-                text = f"CLEARED {finding.code} {finding.element} {t}"
-                events.append(
-                    Event(
-                        now,
-                        "cleared",
-                        finding.element,
-                        finding.code.value,
-                        None,
-                        text,
-                        finding,
-                    )
-                )
+        gone = [f for key, f in self._findings.items() if key not in findings]
+        events.extend(_cleared_event(f, now, t) for f in (*gone, *gate.cleared))
         for key, finding in findings.items():
             if key not in self._findings:
-                text = (
-                    f"FAULT {finding.code} {finding.element}: {finding.message},"
-                    f" look at {', '.join(finding.units)} ({finding.journal_ref})"
-                )
+                text = f"FAULT {finding.code} {finding.element}: {_look(finding)}"
                 events.append(
                     Event(
                         now,
@@ -605,6 +615,19 @@ class Evaluator:
                         finding,
                     )
                 )
+        for finding in gate.raised:
+            text = f"GATE {finding.code}: {_look(finding)}"
+            events.append(
+                Event(
+                    now,
+                    "gate",
+                    finding.element,
+                    None,
+                    finding.code.value,
+                    text,
+                    finding,
+                )
+            )
         if overall is not self._overall:
             old = self._overall.value if self._overall is not None else None
             events.append(
