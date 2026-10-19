@@ -1,6 +1,7 @@
 import asyncio
 import contextlib
 import socket
+import struct
 from collections.abc import AsyncGenerator, Iterator
 
 import pytest
@@ -179,6 +180,14 @@ async def test_hwsim_no_connect_fault_sends_nothing(
             assert await _quiet(relay_rx)
 
 
+async def _assert_clean_exit(hw: ServiceProc) -> None:
+    """SIGTERM, then check exit 0 and no traceback or stray output (after EOF)."""
+    assert await hw.terminate() == 0
+    assert hw.other_stdout == []
+    assert hw.stderr_lines == []
+    assert hw.events[-1]["event"] == "shutdown"
+
+
 @pytest.mark.asyncio
 async def test_hwsim_overlong_line_no_traceback(port_base: int) -> None:
     async with ServiceProc("hwsim", port_base) as hw:
@@ -187,6 +196,48 @@ async def test_hwsim_overlong_line_no_traceback(port_base: int) -> None:
             w.write(b"x" * (70 * 1024))
             await w.drain()
             await hw.wait_event("disconnected", name="ctrl-client")
-        assert hw.other_stdout == []
-        assert hw.stderr_lines == []
-        assert hw.returncode is None
+            await _assert_clean_exit(hw)
+
+
+@pytest.mark.asyncio
+async def test_hwsim_overlong_line_while_sending_stops_sender(
+    port_base: int, relay_rx: socket.socket
+) -> None:
+    async with ServiceProc("hwsim", port_base) as hw:
+        await hw.wait_event("ready")
+        async with _client(port_base) as (_r, w):
+            w.write(b"start 100\n")
+            await _recv(relay_rx)
+            w.write(b"x" * (70 * 1024))
+            await hw.wait_event("sending_stopped")
+            await hw.wait_event("disconnected", name="ctrl-client")
+            assert await _quiet(relay_rx)
+            await _assert_clean_exit(hw)
+
+
+@pytest.mark.asyncio
+async def test_hwsim_client_reset_no_traceback(
+    port_base: int, relay_rx: socket.socket
+) -> None:
+    async with ServiceProc("hwsim", port_base) as hw:
+        await hw.wait_event("ready")
+        with socket.create_connection(("127.0.0.1", port_base + 200)) as c:
+            c.sendall(b"start 100\n")
+            await _recv(relay_rx)
+            # Linger 0: close() sends RST instead of FIN.
+            c.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+        await hw.wait_event("disconnected", name="ctrl-client")
+        await hw.wait_event("sending_stopped")
+        await _assert_clean_exit(hw)
+
+
+@pytest.mark.asyncio
+async def test_hwsim_wrong_connect_fault_uses_wrong_port(
+    port_base: int, relay_rx: socket.socket
+) -> None:
+    async with ServiceProc("hwsim", port_base, SCDEMO_FAULT_WRONG_CONNECT="udp") as hw:
+        await hw.wait_event("ready")
+        async with _client(port_base) as (_r, w):
+            w.write(b"start 100\n")
+            await hw.wait_event("sending", name="udp", port=str(port_base + 1105))
+            assert await _quiet(relay_rx)

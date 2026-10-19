@@ -87,9 +87,7 @@ async def _send_udp(cfg: Config, rate: float) -> None:
             log_event("sending_stopped", name="udp")
 
 
-async def _serve_client(
-    cfg: Config, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
-) -> None:
+async def _serve_client(cfg: Config, reader: asyncio.StreamReader) -> None:
     sender: asyncio.Task[None] | None = None
     async with asyncio.TaskGroup() as tg:
         try:
@@ -103,6 +101,11 @@ async def _serve_client(
                     rate = parse_start(line)
                     if rate is not None and (sender is None or sender.done()):
                         sender = tg.create_task(_send_udp(cfg, rate))
+        except (ConnectionError, ValueError):
+            # Caught here, inside the TaskGroup body: raised past the group it
+            # would arrive wrapped in an ExceptionGroup. ConnectionError is the
+            # client going away; ValueError is an over-long line (stream limit).
+            pass
         finally:
             if sender is not None:
                 sender.cancel()
@@ -127,11 +130,7 @@ async def _bind_ctrl(cfg: Config, busy: asyncio.Lock) -> asyncio.Server | None:
         async with busy:
             log_event("connected", name="ctrl-client")
             try:
-                await _serve_client(cfg, reader, writer)
-            except (ConnectionError, ValueError):
-                # The client went away, or sent an over-long line (ValueError
-                # from the stream limit): drop it quietly.
-                pass
+                await _serve_client(cfg, reader)
             finally:
                 log_event("disconnected", name="ctrl-client")
                 writer.close()
