@@ -472,14 +472,15 @@ PVs.
   scenarios.
 - **Test VM** `test-vm` (x86_64): the same test stack and tool,
   installed with `scdemo-*` units and a dev PV prefix alongside the
-  installed QD stack, which they must not disturb. The `qd-test-vm` skill
+  installed QD stack, which they must not disturb. There the units and the
+  tool run as the existing `xspress` account. The `qd-test-vm` skill
   covers access.
 - **Live EDM on the test VM**: EDM exists only as the x86_64 `qd-epics-edm`
   RPM, so the generated screen is viewed on the VM, against the running
   tool, during the scenarios. The builder chooses Xvfb with screenshots or X
-  forwarding through the bastion. Installing anything on the shared VM
-  (Xvfb, for example) needs the user's approval first, so the plan must
-  call that out as a gated step.
+  forwarding through the bastion. The VM is dedicated to this testing
+  (user, 2026-10-20), so installing Xvfb and other tools there needs no
+  separate approval.
 
 ### 10.6 v1 done
 
