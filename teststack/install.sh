@@ -42,7 +42,15 @@ RULE=/etc/polkit-1/rules.d/40-scdemo-sc.rules
 CONF=/etc/scdemo
 UNITDIR=/etc/systemd/system
 PYTHON=/usr/bin/python3.11
-UV=${UV:-uv}
+# sudo's secure_path (EL9) omits /usr/local/bin, where teststack/vm/prepare.sh
+# puts uv, so look there when uv is not on PATH.
+if [ -z "${UV:-}" ]; then
+    if command -v uv >/dev/null 2>&1; then
+        UV=uv
+    else
+        UV=/usr/local/bin/uv
+    fi
+fi
 
 if [ "$(id -u)" -ne 0 ]; then
     echo "install.sh: must run as root" >&2

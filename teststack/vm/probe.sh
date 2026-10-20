@@ -13,7 +13,7 @@ kv arch "$(uname -m)"
 kv kernel "$(uname -r)"
 kv who "$(id -un) ($(id -Gn))"
 kv python3.11 "$(have python3.11)"
-kv uv "$(have uv) $(uv --version 2>/dev/null) | root: $(sudo -n sh -c 'command -v uv || echo missing' 2>&1)"
+kv uv "$(have uv) $(uv --version 2>/dev/null) | root: $(sudo -n sh -c 'command -v uv || ls /usr/local/bin/uv 2>/dev/null || echo missing' 2>&1)"
 kv gcc "$(have gcc)"
 kv epel "$(rpmq epel-release)"
 if sudo -n true 2>/dev/null; then kv sudo yes; else kv sudo no; fi

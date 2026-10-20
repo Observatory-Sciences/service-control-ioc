@@ -121,7 +121,7 @@ def test_polkit_denial_is_job_failed_finding(container) -> None:
 def test_tool_unit_restarts_on_failure(container) -> None:
     show = container.sh("systemctl show -p Restart,User scdemo-sc.service")
     assert "Restart=on-failure" in show.splitlines()
-    assert "User=scdemo" in show.splitlines()
+    assert f"User={container.user}" in show.splitlines()
     try:
         container.sh("systemctl start scdemo-sc.service")
         waited = container.ca("wait", f"{P}:STATE", "stopped", "--timeout", "30")

@@ -111,7 +111,7 @@ class Host:
         self.stop_tool()
         self.sh(
             f"systemd-run --quiet --unit={TOOL_UNIT}"
-            f" --uid={self.user} --gid={self.user}"
+            f" --uid={self.user}"
             " -p SupplementaryGroups=systemd-journal"
             f" -p EnvironmentFile={CA_ENV}"
             f" -p Environment=PYTHONUNBUFFERED=1 {TOOL_CMD}"

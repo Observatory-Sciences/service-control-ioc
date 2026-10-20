@@ -17,6 +17,8 @@ DOCKER: Final = os.environ.get("DOCKER", str(Path.home() / ".rd" / "bin" / "dock
 CONTAINER_NAME: Final = "scdemo-el9"
 RSYNC_EXCLUDES: Final = (".venv", ".git", "__pycache__", ".ruff_cache")
 SSH_UNREACHABLE: Final = 255
+ROOT_PATH: Final = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+LOGIN_USER: Final = "vmuser"  # owns the repo copy on the VM
 
 
 class ShellError(AssertionError):
@@ -41,9 +43,18 @@ class Target(Protocol):
         ...
 
 
-def _run(argv: list[str], timeout: float) -> subprocess.CompletedProcess[str]:
+def _run(
+    argv: list[str], timeout: float, stdin_text: str | None = None
+) -> subprocess.CompletedProcess[str]:
+    """Run ``argv``; stdin is empty unless ``stdin_text`` is given."""
     return subprocess.run(
-        argv, capture_output=True, text=True, timeout=timeout, check=False
+        argv,
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+        check=False,
+        input=stdin_text,
+        stdin=None if stdin_text is not None else subprocess.DEVNULL,
     )
 
 
@@ -98,23 +109,35 @@ class VmTarget:
     )
     name: str = "vm"
     user: str = "xspress"
-    src: str = "/home/vmuser/qd-service-control"
+    src: str = f"/home/{LOGIN_USER}/qd-service-control"
 
-    def _ssh(self, remote_cmd: str, timeout: float) -> subprocess.CompletedProcess[str]:
+    def _ssh(
+        self, remote_cmd: str, timeout: float, stdin_text: str | None = None
+    ) -> subprocess.CompletedProcess[str]:
         argv = ["ssh", *self.SSH_OPTS, self.HOST, remote_cmd]
-        proc = _run(argv, timeout)
+        try:
+            proc = _run(argv, timeout, stdin_text)
+        except subprocess.TimeoutExpired as err:
+            raise ShellError(f"VM {self.HOST} unreachable: {err}") from err
         if proc.returncode == SSH_UNREACHABLE:
             raise ShellError(f"VM {self.HOST} unreachable: {proc.stderr.strip()}")
         return proc
 
     def sh(self, cmd: str, timeout: float = 120) -> str:
-        remote = f"sudo -n bash -c {shlex.quote(cmd)}"
+        # sudo's secure_path (EL9) omits /usr/local/bin, where scdemo-dropin and
+        # uv live, so put it back as root's login PATH has it.
+        remote = f"sudo -n env PATH={ROOT_PATH} bash -c {shlex.quote(cmd)}"
         proc = self._ssh(remote, timeout)
         if proc.returncode != 0:
             raise _failure(["ssh", self.HOST, remote], proc)
         return proc.stdout
 
     def prepare(self) -> None:
+        # prepare.sh first: it installs rsync, which the sync below needs.
+        script = (REPO / "teststack" / "vm" / "prepare.sh").read_text()
+        proc = self._ssh(f"sudo -n bash -s -- {shlex.quote(LOGIN_USER)}", 900, script)
+        if proc.returncode != 0:
+            raise _failure(["ssh", self.HOST, "prepare.sh"], proc)
         excludes = [arg for ex in RSYNC_EXCLUDES for arg in ("--exclude", ex)]
         argv = [
             "rsync",
@@ -124,9 +147,13 @@ class VmTarget:
             "-e",
             shlex.join(["ssh", *self.SSH_OPTS]),
             f"{REPO}/",
-            f"{self.HOST}:{Path(self.src).name}/",
+            # Absolute, so it does not depend on the ssh login user's home.
+            f"{self.HOST}:{self.src}/",
         ]
-        proc = _run(argv, 600)
+        try:
+            proc = _run(argv, 600)
+        except subprocess.TimeoutExpired as err:
+            raise ShellError(f"VM {self.HOST} unreachable: {err}") from err
         if proc.returncode != 0:
             if proc.returncode == SSH_UNREACHABLE:
                 raise ShellError(f"VM {self.HOST} unreachable: {proc.stderr.strip()}")
@@ -144,7 +171,16 @@ class VmTarget:
             self.HOST,
             f"sudo -n cat {shlex.quote(remote)}",
         ]
-        proc = subprocess.run(argv, capture_output=True, timeout=120, check=False)
+        try:
+            proc = subprocess.run(
+                argv,
+                capture_output=True,
+                timeout=120,
+                check=False,
+                stdin=subprocess.DEVNULL,
+            )
+        except subprocess.TimeoutExpired as err:
+            raise ShellError(f"VM {self.HOST} unreachable: {err}") from err
         if proc.returncode != 0:
             stderr = proc.stderr.decode(errors="replace").strip()
             if proc.returncode == SSH_UNREACHABLE:

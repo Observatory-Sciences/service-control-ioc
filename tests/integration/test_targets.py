@@ -95,7 +95,10 @@ def test_vm_target_sh_uses_mux_and_sudo(monkeypatch: pytest.MonkeyPatch) -> None
             "-o",
             "ConnectTimeout=20",
             "test-vm",
-            "sudo -n bash -c 'echo '\"'\"'hi there'\"'\"''",
+            (
+                "sudo -n env PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin"
+                ":/sbin:/bin bash -c 'echo '\"'\"'hi there'\"'\"''"
+            ),
         ]
     ]
 
@@ -121,14 +124,15 @@ def test_vm_prepare_rsync_excludes(monkeypatch: pytest.MonkeyPatch) -> None:
     fake = FakeRun()
     monkeypatch.setattr(subprocess, "run", fake)
     VmTarget().prepare()
-    rsync = fake.calls[0]
+    prepare, rsync = fake.calls[0], fake.calls[1]
+    assert prepare[-1] == "sudo -n bash -s -- vmuser"
     assert rsync[0] == "rsync"
     excludes = [rsync[i + 1] for i, arg in enumerate(rsync) if arg == "--exclude"]
     assert {".venv", ".git", "__pycache__", ".ruff_cache"} <= set(excludes)
     assert "--delete" in rsync
-    assert rsync[-1] == "test-vm:qd-service-control/"
+    assert rsync[-1] == "test-vm:/home/vmuser/qd-service-control/"
     assert Path(rsync[-2]).name == "qd-service-control"
-    install = fake.calls[1]
+    install = fake.calls[2]
     assert install[-1].endswith(
         "bash /home/vmuser/qd-service-control/teststack/install.sh --user xspress"
         " /home/vmuser/qd-service-control'"
@@ -160,3 +164,32 @@ def test_vm_fetch_is_binary_safe(
             "sudo -n cat '/tmp/my shot.png'",
         ]
     ]
+
+
+def _timeout(argv: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+    raise subprocess.TimeoutExpired(argv, 20)
+
+
+def test_vm_timeouts_become_unreachable(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(subprocess, "run", _timeout)
+    target = VmTarget()
+    with pytest.raises(ShellError, match="VM test-vm unreachable"):
+        target.sh("true")
+    with pytest.raises(ShellError, match="VM test-vm unreachable"):
+        target.prepare()
+    with pytest.raises(ShellError, match="VM test-vm unreachable"):
+        target.fetch("/tmp/x", tmp_path / "x")
+
+
+def test_vm_ssh_does_not_read_stdin(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: dict[str, object] = {}
+
+    def fake_run(argv: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        seen.update(kwargs)
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    VmTarget().sh("true")
+    assert seen["stdin"] is subprocess.DEVNULL
