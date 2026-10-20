@@ -42,7 +42,19 @@ kv journal-persistent "$(ls -d /var/log/journal 2>&1) | storage: $(grep -hE '^St
 
 kv qd-units "$(systemctl list-units 'qd-*' --all --no-legend --no-pager | awk '{print $1"="$3"/"$4}' | oneline)"
 kv qd-unit-files "$(systemctl list-unit-files 'qd-*' --no-legend --no-pager | awk '{print $1"="$2}' | oneline)"
-kv port-clash "$( (ss -ltnuH 2>/dev/null | awk '{print $5}' | grep -E ':(20[0-9]{3}|2010|2020|5064|5065)$' | sort -u | oneline) || true)"
+# Listeners owned by scdemo-* units (hwsim on 127.0.0.2:20200 after install.sh) are
+# ours, not a clash: list them separately and exclude them from port-clash.
+scdemo_pids=$(systemctl list-units 'scdemo-*' --all --no-legend --no-pager 2>/dev/null | awk '{print $1}' \
+    | xargs -r -n1 systemctl show -p MainPID --value 2>/dev/null | grep -vx 0 | oneline || true)
+ports_re=':(20[0-9]{3}|2010|2020|5064|5065)$'
+listeners_all=$(sudo -n ss -ltnupH 2>/dev/null || ss -ltnuH 2>/dev/null || true)
+owned() { # stdin: ss lines; keep (or with -v drop) those owned by an scdemo MainPID
+    local pat=; for p in $scdemo_pids; do pat="${pat:+$pat|}pid=$p,"; done
+    if [ -z "$pat" ]; then [ "${1:-}" = -v ] && cat || true; else grep ${1:-} -E "$pat" || true; fi
+}
+clash=$(printf '%s\n' "$listeners_all" | owned -v | awk '{print $5}' | grep -E "$ports_re" | sort -u | oneline || true)
+kv port-clash "${clash:-none}"
+kv scdemo-listeners "$(printf '%s\n' "$listeners_all" | owned | awk '{print $1"/"$5}' | grep -E "$ports_re" | sort -u | oneline || true)"
 kv listeners-ca "$(ss -lntuH 2>/dev/null | awk '{print $1"/"$5}' | grep -E ':(5064|5065|6064|6065)$' | sort -u | oneline)"
 kv existing-scdemo "units: $(systemctl list-units 'scdemo-*' 'qdsc-*' --all --no-legend --no-pager | awk '{print $1}' | oneline) | files: $(systemctl list-unit-files 'scdemo-*' --no-legend --no-pager | awk '{print $1"="$2}' | oneline) | dirs: $(ls -d /opt/scdemo /opt/qd-service-control /etc/scdemo 2>&1 | oneline)"
 kv pypi "$(curl -sI -m 10 https://pypi.org 2>&1 | head -1 | tr -d '\r')"

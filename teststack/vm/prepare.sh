@@ -23,7 +23,7 @@ for pkg in rsync xwd netpbm-progs xorg-x11-fonts-misc; do
     rpm -q "$pkg" >/dev/null || missing+=("$pkg")
 done
 if [ "${#missing[@]}" -gt 0 ]; then
-    dnf install -y "${missing[@]}"
+    dnf install -y "${missing[@]}" </dev/null
 fi
 
 # uv, pinned. The installer script and the release tarball are both from Astral.
