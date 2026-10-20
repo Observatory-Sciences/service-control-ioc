@@ -31,6 +31,7 @@ from qd_service_control.config.spec import (
     ServiceSpec,
     StackSpec,
 )
+from qd_service_control.pvnames import pv_issues, token
 
 _MIN_PORT = 1
 _MAX_PORT = 65535
@@ -84,6 +85,9 @@ def load_config_text(text: str, file: Path = Path("<string>")) -> StackSpec:
     raw, issues = _validate_shape(data, file)
     expander = _Expander(raw, issues)
     spec = expander.expand()
+    if not expander.issues:
+        for path, message in pv_issues(spec):
+            expander.issue(path, message)
     if expander.issues:
         raise ConfigFileError(file, expander.issues)
     return spec
@@ -218,6 +222,7 @@ class _Expander:
             files=self.files,
             edges=self.edges,
             groups=self.groups,
+            stack_group=self.raw.stack_group,
         )
 
     # -- helpers ---------------------------------------------------------
@@ -307,6 +312,9 @@ class _Expander:
             unit = self._text(f"{base}.unit", raw.unit, n)
             if unit is None:
                 continue
+            pv = token(sid) if raw.pv is None else self._text(f"{base}.pv", raw.pv, n)
+            if pv is None:
+                continue
             self._put(
                 self.services,
                 sid,
@@ -315,6 +323,7 @@ class _Expander:
                     key=key,
                     instance=n,
                     unit=unit,
+                    pv=pv,
                     listeners=tuple(listener_ids),
                     files=tuple(file_ids),
                     required=raw.required,
@@ -514,6 +523,10 @@ class _Expander:
         top = self.owners.get(self.raw.top)
         if top is None or top.kind != "services" or top.dropped:
             self.issue("top", f"{self.raw.top!r} is not a service")
+        if self.raw.stack_group is not None and (
+            self.raw.stack_group not in self.raw.groups
+        ):
+            self.issue("stack_group", f"unknown group {self.raw.stack_group!r}")
         for gkey, group in self.raw.groups.items():
             members: list[str] = []
             for index, member in enumerate(group.members):

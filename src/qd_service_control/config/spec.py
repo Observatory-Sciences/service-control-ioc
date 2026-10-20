@@ -19,6 +19,7 @@ class Defaults:
     cpu_window: float = 10.0
     journal_lines: int = 20
     journal_bytes: int = 5120
+    job_timeout: float = 120.0
 
 
 @dataclass(frozen=True)
@@ -52,6 +53,7 @@ class ServiceSpec:
     key: str
     instance: int | None
     unit: str
+    pv: str
     listeners: tuple[str, ...]
     files: tuple[str, ...]
     required: bool
@@ -99,6 +101,7 @@ class StackSpec:
     files: Mapping[str, FileSpec]
     edges: Mapping[str, EdgeSpec]
     groups: Mapping[str, GroupSpec]
+    stack_group: str | None
 
     def service_by_unit(self, unit: str) -> ServiceSpec | None:
         """Return the service whose systemd unit name is ``unit``, if any."""

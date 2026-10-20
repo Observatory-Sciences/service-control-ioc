@@ -1,5 +1,6 @@
 prefix: "SCDEMO:SC"
 top: controller
+stack_group: all
 vars: {base: 20000}
 flags: {hardware: true}
 services:

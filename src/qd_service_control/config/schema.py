@@ -47,6 +47,7 @@ class DefaultsRaw(_Strict):
     cpu_window: float = 10.0
     journal_lines: int = 20
     journal_bytes: int = 5120
+    job_timeout: float = 120.0
 
 
 class ListenerRaw(_Strict):
@@ -71,6 +72,7 @@ class FileRaw(_Strict):
 
 class ServiceRaw(_Strict):
     unit: str
+    pv: str | None = None
     instances: Instances | None = None
     required: bool = True
     timeout: float | None = None
@@ -105,6 +107,7 @@ class GroupRaw(_Strict):
 class ConfigRaw(_Strict):
     prefix: str
     top: str
+    stack_group: str | None = None
     vars: dict[str, int] = Field(default_factory=dict)
     flags: dict[str, bool] = Field(default_factory=dict)
     defaults: DefaultsRaw = Field(default_factory=DefaultsRaw)

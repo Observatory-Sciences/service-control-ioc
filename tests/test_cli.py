@@ -41,3 +41,15 @@ def test_run_cli_bad_config_exits_2(tmp_path, capsys):
         main(["run", str(bad), "--log-format", "json"])
     assert e.value.code == 2
     assert f"{bad}: services.svc.port: " in capsys.readouterr().err
+
+
+def test_check_config_pvs_lists_names(capsys):
+    main(["check-config", str(SCDEMO)])
+    plain = capsys.readouterr().out.splitlines()
+    main(["check-config", str(SCDEMO), "--pvs"])
+    with_pvs = capsys.readouterr().out.splitlines()
+    assert with_pvs[0] == plain[0]
+    assert with_pvs[: len(plain)] == plain
+    pvs = with_pvs[len(plain) :]
+    assert len(pvs) == 155
+    assert "SCDEMO:SC:SINK1:STATE" in pvs
