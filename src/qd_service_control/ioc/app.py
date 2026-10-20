@@ -311,15 +311,17 @@ class Ioc:
     async def run(self) -> None:
         """Subscribe, publish everything once, then flush until cancelled."""
         unsubscribe = self._api.subscribe(self._on_event)
-        unsubscribe_journal = self._api.subscribe_journal(self._on_journal)
+        unsubscribe_journal: Callable[[], None] | None = None
         try:
+            unsubscribe_journal = self._api.subscribe_journal(self._on_journal)
             self._publish(force=True)
             self._dirty_logs.update(self._names.services)  # lines before subscribe
             self._dirty.set()
             await self._flush_loop()
         finally:
             unsubscribe()
-            unsubscribe_journal()
+            if unsubscribe_journal is not None:
+                unsubscribe_journal()
             if self._refresh is not None:
                 self._refresh.cancel()
                 self._refresh = None

@@ -30,17 +30,18 @@ from dataclasses import replace
 from pathlib import Path
 from typing import TextIO
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # tests/, for fakes
-
-from qd_service_control.ioc.app import serve_ioc
-
-from fakes import everything, scdemo_spec, scdemo_table, unit_props
 from qd_service_control.config.spec import StackSpec
+from qd_service_control.ioc.app import serve_ioc
 from qd_service_control.model.deps import DependencyGraph
 from qd_service_control.model.evaluator import Evaluator, Inputs
 from qd_service_control.model.types import Event, JobOutcome, StackView, Verb
 from qd_service_control.observe.journal import JournalLine
 from qd_service_control.observe.systemd import snapshot_from_props
+
+# tests/ is not a package: put it on sys.path, then import the shared fakes.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from fakes import everything, scdemo_spec, scdemo_table, unit_props
 
 FAILED_UNIT = "scdemo-relay.service"
 FAILED_PROPS = {
