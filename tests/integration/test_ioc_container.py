@@ -40,7 +40,7 @@ def test_every_pv_served_in_container(container) -> None:
     start_tool_and_wait_stopped(container)
     names = (
         f"/opt/qd-service-control/venv/bin/qd-service-control check-config --pvs"
-        f" /src/teststack/config/scdemo.yaml | grep '^{P}:'"
+        f" {container.target.src}/teststack/config/scdemo.yaml | grep '^{P}:'"
     )
     count = int(container.sh(f"{names} | wc -l").strip())
     assert count == 155

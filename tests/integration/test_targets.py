@@ -133,3 +133,30 @@ def test_vm_prepare_rsync_excludes(monkeypatch: pytest.MonkeyPatch) -> None:
         "bash /home/vmuser/qd-service-control/teststack/install.sh --user xspress"
         " /home/vmuser/qd-service-control'"
     )
+
+
+def test_vm_fetch_is_binary_safe(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    png = b"\x89PNG\r\n\x1a\n\x00\xff\xfe"
+    calls: list[Call] = []
+
+    def fake_run(
+        argv: list[str], **kwargs: object
+    ) -> subprocess.CompletedProcess[bytes]:
+        calls.append(list(argv))
+        assert "text" not in kwargs
+        return subprocess.CompletedProcess(argv, 0, png, b"")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    local = tmp_path / "shot.png"
+    VmTarget().fetch("/tmp/my shot.png", local)
+    assert local.read_bytes() == png
+    assert calls == [
+        [
+            "ssh",
+            *VmTarget.SSH_OPTS,
+            "test-vm",
+            "sudo -n cat '/tmp/my shot.png'",
+        ]
+    ]

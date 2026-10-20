@@ -137,7 +137,20 @@ class VmTarget:
         )
 
     def fetch(self, remote: str, local: Path) -> None:
-        local.write_text(self.sh(f"cat {shlex.quote(remote)}"))
+        # Binary-safe, and root-readable: stream the bytes of `sudo cat`.
+        argv = [
+            "ssh",
+            *self.SSH_OPTS,
+            self.HOST,
+            f"sudo -n cat {shlex.quote(remote)}",
+        ]
+        proc = subprocess.run(argv, capture_output=True, timeout=120, check=False)
+        if proc.returncode != 0:
+            stderr = proc.stderr.decode(errors="replace").strip()
+            if proc.returncode == SSH_UNREACHABLE:
+                raise ShellError(f"VM {self.HOST} unreachable: {stderr}")
+            raise ShellError(f"{shlex.join(argv)} exited {proc.returncode}: {stderr}")
+        local.write_bytes(proc.stdout)
 
 
 def target_from_env() -> Target | None:
