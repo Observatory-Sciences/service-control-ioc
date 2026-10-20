@@ -840,7 +840,11 @@ class Evaluator:
         ]
         starting = any(
             s.active_state == "activating"
-            or (s.active_state in ("inactive", "failed") and s.job_pending)
+            or (
+                s.active_state in ("inactive", "failed")
+                and s.job_pending
+                and s.job_type not in _STOP_JOB_TYPES
+            )
             for s in snaps
         )
         # An active unit's pending job counts only if it is a stop or restart:

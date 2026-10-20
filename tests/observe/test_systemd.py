@@ -238,6 +238,44 @@ async def test_job_type_tracked_from_job_new(recorder: Recorder) -> None:
 
 
 @pytest.mark.asyncio
+async def test_restart_job_reads_start_after_its_stop_phase(
+    recorder: Recorder,
+) -> None:
+    # systemd turns a restart job into a start job, on the same path, once the
+    # stop phase is done. Even if the cached type is still "restart", a unit
+    # seen inactive or activating during that job is in its start phase.
+    path = "/org/freedesktop/systemd1/job/9"
+    systemd = FakeSystemd({"a.service": unit_props()})
+    task = await started(make_observer(systemd, recorder, ("a.service",)), recorder)
+    try:
+        bus = systemd.bus
+        bus.fire_job_new(9, path, "a.service", job_type="restart")
+        await recorder.wait_for(lambda: recorder.snapshots[-1].job_type == "restart")
+        bus.fire_properties_changed(
+            "a.service", UNIT_IFACE, {"ActiveState": "deactivating", "SubState": "stop"}
+        )
+        assert recorder.snapshots[-1].job_type == "restart"  # the real stop phase
+        for active, sub in (("inactive", "dead"), ("activating", "start")):
+            bus.fire_properties_changed(
+                "a.service", UNIT_IFACE, {"ActiveState": active, "SubState": sub}
+            )
+            assert recorder.snapshots[-1].job_type == "start"
+        # Type=notify: active while the (same) job is still pending.
+        bus.fire_properties_changed(
+            "a.service", UNIT_IFACE, {"ActiveState": "active", "SubState": "running"}
+        )
+        await asyncio.sleep(0.01)  # any type read still in flight lands
+        snap = recorder.snapshots[-1]
+        assert (snap.active_state, snap.job_pending, snap.job_type) == (
+            "active",
+            True,
+            "start",
+        )
+    finally:
+        await stop(task)
+
+
+@pytest.mark.asyncio
 async def test_duplicate_unit_signal_ignored(
     systemd: FakeSystemd, recorder: Recorder
 ) -> None:

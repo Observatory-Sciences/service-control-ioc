@@ -1204,6 +1204,24 @@ def test_stop_job_on_an_active_unit_is_stop_evidence() -> None:
     assert ev.view().overall is OverallState.STOPPING
 
 
+def test_stop_job_on_an_inactive_unit_is_not_start_evidence() -> None:
+    # A stop job still pending on a unit that has already gone inactive (its
+    # job not removed yet) is part of the stop, not a start.
+    ev = running()
+    ev.update(
+        scenario(
+            T + 200,
+            up=without(*(e for e in EVERYTHING if e.startswith("controller -> "))),
+            units={
+                "controller": snap("controller", "queued", job_type="stop"),
+                "relay": stopping("relay"),
+            },
+            poll=False,
+        )
+    )
+    assert ev.view().overall is OverallState.STOPPING
+
+
 def test_overall_starting_not_stopping_on_restart_start_phase() -> None:
     ev = running()
     ev.update(scenario(T + 200, state="queued", poll=False))

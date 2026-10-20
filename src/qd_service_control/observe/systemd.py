@@ -38,6 +38,10 @@ DEFAULT_BACKOFF: Final = (0.5, 1.0, 2.0, 5.0)
 MAX_REREADS: Final = 5  # reads of a unit that changes during each read
 JOB_IFACE: Final = "org.freedesktop.systemd1.Job"
 JOB_TYPE: Final = "JobType"  # set on a unit's props from its job object
+_RESTART_JOBS: Final = frozenset({"restart", "try-restart"})
+# A unit in one of these states while its restart job is pending is past the
+# stop phase: systemd has turned the job into a start (on the same path).
+_START_PHASE: Final = frozenset({"inactive", "failed", "activating"})
 
 PropertiesCallback = Callable[[str, dict[str, object]], None]
 
@@ -244,6 +248,7 @@ class SystemdObserver:
         self._cgroup_wake = asyncio.Event()  # also wakes the job-type reads
         self._job_paths: dict[str, str] = {}  # unit -> job path seen last
         self._job_due: dict[str, str] = {}  # unit -> job path to read the type of
+        self._start_phase: dict[str, str] = {}  # unit -> job seen past its stop
         # Survives reconnects.
         self._after: dict[str, tuple[str, ...]] = {}
 
@@ -293,6 +298,7 @@ class SystemdObserver:
         self._cgroup_due.clear()
         self._job_paths.clear()
         self._job_due.clear()
+        self._start_phase.clear()
         reload_done = asyncio.Event()
         for unit in self._units:
             bus.on_properties_changed(unit, partial(self._properties_changed, unit))
@@ -388,7 +394,7 @@ class SystemdObserver:
                 job_type = await bus.job_type(path)
                 props = self._props.get(unit)
                 if props is not None and _job(props)[1:] == (path,):
-                    props[JOB_TYPE] = job_type
+                    props[JOB_TYPE] = self._job_kind(unit, path, job_type)
                     self._emit_if_changed(unit)
             while self._cgroup_due:
                 unit = self._cgroup_due.pop()
@@ -402,20 +408,35 @@ class SystemdObserver:
                     self._emit(unit)
 
     def _track_job(self, unit: str) -> None:
-        """On a new job for ``unit``: forget the old type, queue a type read."""
+        """On a new job for ``unit``: forget the old type, queue a type read.
+
+        Also notes when a restart job reaches its start phase (systemd turns
+        it into a start job on the same path), and from then on reads its
+        type as ``start``.
+        """
         props = self._props.get(unit)
         if props is None:
             return
         job = _job(props)
         path = str(job[1]) if len(job) > 1 else "/"
-        if self._job_paths.get(unit) == path:
-            return
-        self._job_paths[unit] = path
-        props.pop(JOB_TYPE, None)
-        self._job_due.pop(unit, None)
-        if job != IDLE_JOB:
-            self._job_due[unit] = path
-            self._cgroup_wake.set()
+        if self._job_paths.get(unit) != path:
+            self._job_paths[unit] = path
+            props.pop(JOB_TYPE, None)
+            self._job_due.pop(unit, None)
+            self._start_phase.pop(unit, None)
+            if job != IDLE_JOB:
+                self._job_due[unit] = path
+                self._cgroup_wake.set()
+        if job != IDLE_JOB and props.get("ActiveState") in _START_PHASE:
+            self._start_phase[unit] = path
+        if JOB_TYPE in props:
+            props[JOB_TYPE] = self._job_kind(unit, path, _str(props, JOB_TYPE))
+
+    def _job_kind(self, unit: str, path: str, job_type: str) -> str:
+        """``job_type``, except a restart past its stop phase is a start."""
+        if job_type in _RESTART_JOBS and self._start_phase.get(unit) == path:
+            return "start"
+        return job_type
 
     def _note_in_flight(self, unit: str, changed: Mapping[str, object]) -> None:
         """Remember a signal that arrived while ``unit``'s read was in flight."""

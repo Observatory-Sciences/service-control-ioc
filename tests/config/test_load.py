@@ -526,3 +526,12 @@ def test_group_id_stack_is_an_issue():
     found = issues_of(text)
     assert "groups.stack" in found
     assert "reserved" in found["groups.stack"][0]
+
+
+@pytest.mark.parametrize(
+    "key", ["poll_interval", "fast_poll_interval", "fast_poll_window"]
+)
+@pytest.mark.parametrize("value", [0, -1])
+def test_poll_settings_must_be_positive(key: str, value: float) -> None:
+    issues = issues_of(HEAD + f"defaults: {{{key}: {value}}}\n" + SVC)
+    assert f"defaults.{key}" in issues
