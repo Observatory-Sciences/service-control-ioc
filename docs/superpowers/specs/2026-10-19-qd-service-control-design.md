@@ -378,11 +378,13 @@ integer arithmetic on the instance number, never `eval`.
 
 ### 9.2 Files this repo ships, ready to package
 
-- The Python package, with `qd-service-control` (run the IOC) and its
-  `generate-edm` subcommand.
+- The Python package, with `qd-service-control` and its subcommands `run`
+  (the IOC), `check-config`, `generate-edm` and `generate-polkit`.
 - A systemd unit for the tool (runs as the stack user, `Type=notify` or
   `simple` at the builder's choice, restart on failure).
-- A polkit rule template, limited to a list of units and the tool's user.
+- The polkit rule, generated from the YAML by
+  `generate-polkit CONFIG --user USER` (plan 3, Ruling 6), limited to the
+  configured units and the tool's user.
 - The test stack: services, unit files with the gating drop-ins, the dev
   wait helpers, its polkit rule and its YAML (the reference example).
 - An example Xspress YAML is out of v1 (Section 11).

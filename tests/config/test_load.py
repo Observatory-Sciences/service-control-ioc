@@ -503,3 +503,24 @@ edges:
   - {client: b, server: a.p}
 """
     assert load_config_text(text).edges == {}
+
+
+def test_group_id_equal_to_service_id_is_an_issue():
+    text = HEAD + SVC + "groups:\n  svc: {unit: g.service, members: [svc]}\n"
+    found = issues_of(text)
+    assert "groups.svc" in found
+    assert "also a service id" in found["groups.svc"][0]
+
+
+def test_service_id_stack_is_an_issue():
+    text = "prefix: P\ntop: stack\nservices:\n  stack: {unit: s.service}\n"
+    found = issues_of(text)
+    assert "services.stack" in found
+    assert "reserved" in found["services.stack"][0]
+
+
+def test_group_id_stack_is_an_issue():
+    text = HEAD + SVC + "groups:\n  stack: {unit: g.service, members: [svc]}\n"
+    found = issues_of(text)
+    assert "groups.stack" in found
+    assert "reserved" in found["groups.stack"][0]

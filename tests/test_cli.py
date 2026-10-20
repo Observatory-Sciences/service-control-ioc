@@ -73,3 +73,23 @@ def test_check_config_does_not_import_softioc() -> None:
     )
     assert result.returncode == 0, result.stderr
     assert result.stdout.startswith("services: 4")
+
+
+def test_generate_edm_does_not_import_softioc(tmp_path: Path) -> None:
+    code = (
+        "import sys\n"
+        "from qd_service_control import main\n"
+        "main(['generate-edm', sys.argv[1], sys.argv[2]])\n"
+        "assert 'softioc' not in sys.modules\n"
+        "assert 'aioca' not in sys.modules\n"
+        "assert 'qd_service_control.ioc.app' not in sys.modules\n"
+    )
+    outdir = tmp_path / "edm"
+    result = subprocess.run(
+        [sys.executable, "-I", "-c", code, str(SCDEMO), str(outdir)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert (outdir / "scdemo-sc.edl").is_file()

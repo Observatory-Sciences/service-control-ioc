@@ -50,7 +50,11 @@ def _check_config(path: Path, *, pvs: bool = False) -> None:
 
 def _generate_edm(config: Path, outdir: Path, name: str | None) -> None:
     spec = _load(config)
-    files = generate(spec, name or default_name(spec.prefix))
+    try:
+        files = generate(spec, name or default_name(spec.prefix))
+    except ValueError as err:
+        print(f"{config}: {err}", file=sys.stderr)
+        sys.exit(_EXIT_BAD_CONFIG)
     outdir.mkdir(parents=True, exist_ok=True)
     for file_name, content in files.items():
         path = outdir / file_name

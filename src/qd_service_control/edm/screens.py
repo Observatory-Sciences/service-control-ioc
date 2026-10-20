@@ -182,9 +182,23 @@ def _detail(spec: StackSpec, names: PvNames, sid: str) -> str:
 
 
 def generate(spec: StackSpec, name: str) -> dict[str, str]:
-    """File name -> ``.edl`` text: the top screen and a detail screen per service."""
+    """File name -> ``.edl`` text: the top screen and a detail screen per service.
+
+    Raises ``ValueError`` if two services would write the same file (bases
+    that differ only in case or in ``_`` versus ``-``).
+    """
     names = pv_names(spec)
     files = {f"{name}.edl": _top(spec, names, name)}
+    owners: dict[str, str] = {}
     for sid, base in names.services.items():
-        files[f"{_file_stem(name, base)}.edl"] = _detail(spec, names, sid)
+        file_name = f"{_file_stem(name, base)}.edl"
+        if file_name in owners:
+            raise ValueError(
+                f"services {owners[file_name]!r} and {sid!r} (PV bases "
+                f"{names.services[owners[file_name]]!r} and {base!r}) map to "
+                f"the same screen file {file_name!r}; make their PV bases "
+                "differ by more than case or '_' versus '-'"
+            )
+        owners[file_name] = sid
+        files[file_name] = _detail(spec, names, sid)
     return files

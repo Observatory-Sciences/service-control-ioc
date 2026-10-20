@@ -18,7 +18,10 @@ Two options:
   `xspress`, and add it to `systemd-journal`. The polkit rule then names only
   `qdctl`, so no stack process can start or stop its siblings.
 - **Reuse `xspress`.** This is simpler, but the rule would then let every QD
-  process (they all run as `xspress`) restart any unit in the list.
+  process (they all run as `xspress`) restart any unit in the list. The
+  generated rule also returns NO for every other manage-units request from
+  that user (other units, and other verbs such as reload), so reusing
+  `xspress` would restrict its other systemd actions.
 
 The unit gets the group through `SupplementaryGroups=systemd-journal`, so the
 user's own group list need not change if only the tool needs it.

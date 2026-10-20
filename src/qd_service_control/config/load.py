@@ -4,7 +4,7 @@ import copy
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Literal, TypeVar
+from typing import Any, Final, Literal, TypeVar
 
 import yaml
 from pydantic import ValidationError
@@ -37,6 +37,9 @@ _MIN_PORT = 1
 _MAX_PORT = 65535
 
 _T = TypeVar("_T")
+
+# Same value as core.STACK_TARGET (not imported: core depends on this package).
+_STACK_TARGET: Final = "stack"
 
 
 @dataclass(frozen=True)
@@ -527,7 +530,23 @@ class _Expander:
             self.raw.stack_group not in self.raw.groups
         ):
             self.issue("stack_group", f"unknown group {self.raw.stack_group!r}")
+        if _STACK_TARGET in self.services:
+            self.issue(
+                f"services.{_STACK_TARGET}",
+                f"{_STACK_TARGET!r} is reserved for the stack-level control target",
+            )
         for gkey, group in self.raw.groups.items():
+            if gkey == _STACK_TARGET:
+                self.issue(
+                    f"groups.{gkey}",
+                    f"{gkey!r} is reserved for the stack-level control target",
+                )
+            elif gkey in self.services:
+                self.issue(
+                    f"groups.{gkey}",
+                    f"group id {gkey!r} is also a service id; control targets "
+                    "are bare ids, so the two would be ambiguous",
+                )
             members: list[str] = []
             for index, member in enumerate(group.members):
                 info = self.owners.get(member)

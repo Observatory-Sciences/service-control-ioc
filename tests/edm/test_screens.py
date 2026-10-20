@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from qd_service_control import cli
-from qd_service_control.config.load import load_config
+from qd_service_control.config.load import load_config, load_config_text
 from qd_service_control.config.spec import StackSpec
 from qd_service_control.edm.screens import default_name, generate
 from qd_service_control.pvnames import pv_names
@@ -116,3 +116,29 @@ def test_detail_log_is_880_by_320(spec: StackSpec, files: dict[str, str]) -> Non
         obj = next(o for o in text.split("object ") if log in o)
         assert re.search(r"^w 880$", obj, re.MULTILINE), base
         assert re.search(r"^h 320$", obj, re.MULTILINE), base
+
+
+_COLLIDING = """
+prefix: P
+top: a
+services:
+  a: {unit: a.service, pv: A_B}
+  b: {unit: b.service, pv: a_b}
+"""
+
+
+def test_generate_rejects_detail_screens_with_the_same_file_name() -> None:
+    other = load_config_text(_COLLIDING)
+    with pytest.raises(ValueError, match="A_B.*a_b|a_b.*A_B"):
+        generate(other, "x")
+
+
+def test_generate_edm_reports_collision_without_traceback(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    config = tmp_path / "c.yaml"
+    config.write_text(_COLLIDING)
+    with pytest.raises(SystemExit) as e:
+        cli.main(["generate-edm", str(config), str(tmp_path / "out")])
+    assert e.value.code == 2
+    assert "same screen file" in capsys.readouterr().err
