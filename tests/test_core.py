@@ -385,7 +385,7 @@ async def test_orderly_stop_has_no_faults() -> None:
     stack_states = [
         e.new for e in h.events if e.kind == "stack" and "post" not in e.text
     ]
-    assert stack_states == ["ready", "starting", "stopped"]
+    assert stack_states == ["ready", "stopping", "stopped"]
 
 
 @pytest.mark.asyncio

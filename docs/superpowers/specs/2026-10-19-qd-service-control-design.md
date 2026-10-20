@@ -122,6 +122,8 @@ makes it false (anti-goal 1). The overall state is one of these:
 - `stopped`: every configured unit is inactive and none has failed.
 - `starting`: not ready, nothing is `fault`, and at least one unit is active
   or activating.
+- `stopping`: not ready, nothing is `fault`, and units are stopping (a stop
+  job is pending or a unit is deactivating) with none starting.
 - `ready`: stack ready is true.
 - `fault`: anything else, meaning at least one element is `fault`.
 
@@ -303,7 +305,7 @@ The prefix comes from the YAML. Each element gets a short PV-safe name,
 written in the YAML or derived from it, unique per kind. The layout is
 indicative; the builder settles the names.
 
-- Stack: `READY` (bi), `STATE` (mbbi: stopped/starting/ready/fault),
+- Stack: `READY` (bi), `STATE` (mbbi: stopped/starting/stopping/ready/fault),
   `POST_READY` (bi: every required `post` element is ready, shown only and
   never part of `READY`),
   `FAULTS` (count), `FAULT_MSG` (latest finding, long string),
@@ -503,7 +505,7 @@ through the PVs and from the screen.
 These weren't discussed. They are my calls, and you can change any of them.
 
 1. Five element states, with `unknown` and `stopped` grey, and overall
-   states `stopped/starting/ready/fault` (5.1).
+   states `stopped/starting/stopping/ready/fault` (5.1).
 2. Any `unknown` element makes stack ready false (5.1).
 3. Restart-loop and CPU-spin limits are configurable, with defaults
    (90%, 10 s) (5.2, 6.6).

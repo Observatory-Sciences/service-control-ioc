@@ -74,6 +74,10 @@ _UNIT_CODES: Final = frozenset(
     }
 )
 
+_GATE_CODES: Final = frozenset(
+    {FindingCode.GATE_VIOLATION, FindingCode.GATE_VIOLATION_POSSIBLE}
+)
+
 _UNKNOWN: Final = ElementState.UNKNOWN
 _STOPPED: Final = ElementState.STOPPED
 _WAITING: Final = ElementState.WAITING
@@ -122,7 +126,7 @@ def _start_s(snap: UnitSnapshot) -> float:
     return (snap.exec_main_start_us or snap.active_enter_us) / _US
 
 
-def _exit_text(snap: UnitSnapshot) -> str:
+def exit_text(snap: UnitSnapshot) -> str:
     status = snap.exec_main_status
     if snap.exec_main_code == _CLD_EXITED:
         what = f"exited with status {status}"
@@ -147,14 +151,9 @@ def _edge_missing_detail(edge: EdgeSpec, fact: EdgeFact) -> str:
     return "no sender socket"
 
 
-def _look(finding: Finding) -> str:
-    """``<message>, look at <units> (journalctl ...)`` for FAULT and GATE lines."""
-    units = ", ".join(finding.units)
-    return f"{finding.message}, look at {units} ({finding.journal_ref})"
-
-
 def _cleared_event(finding: Finding, now: float, t: str) -> Event:
-    text = f"CLEARED {finding.code} {finding.element} {t}"
+    after = f" after {finding.units[1]}" if finding.code in _GATE_CODES else ""
+    text = f"CLEARED {finding.code} {finding.element}{after} {t}"
     return Event(
         now, "cleared", finding.element, finding.code.value, None, text, finding
     )
@@ -232,6 +231,7 @@ class Evaluator:
             findings=(*self._findings.values(), *self._gate.findings),
             units=self._units,
             cpu=self._cpu,
+            evaluated=self._overall is not None,
         )
 
     # -- history -------------------------------------------------------------
@@ -389,7 +389,7 @@ class Evaluator:
                 f" in {defaults.restart_window:g} s",
             )
         if snap.active_state == "failed" or snap.sub_state == "auto-restart":
-            return unit_fault(FindingCode.UNIT_FAILED, _exit_text(snap))
+            return unit_fault(FindingCode.UNIT_FAILED, exit_text(snap))
         if svc.unit in inputs.spinning:
             return unit_fault(
                 FindingCode.CPU_SPIN,
@@ -655,7 +655,7 @@ class Evaluator:
     ) -> list[Event]:
         now = inputs.now
         views = self._views(results, findings, now)
-        overall, ready, post_ready = self._overall_of(views, findings.values())
+        overall, ready, post_ready = self._overall_of(views, findings.values(), inputs)
         if (
             self._overall is OverallState.STOPPED
             and overall is not OverallState.STOPPED
@@ -680,7 +680,7 @@ class Evaluator:
         events.extend(_cleared_event(f, now, t) for f in (*gone, *gate.cleared))
         for key, finding in findings.items():
             if key not in self._findings:
-                text = f"FAULT {finding.code} {finding.element}: {_look(finding)}"
+                text = f"FAULT {finding.code} {finding.element}: {finding.look}"
                 events.append(
                     Event(
                         now,
@@ -693,7 +693,7 @@ class Evaluator:
                     )
                 )
         for finding in gate.raised:
-            text = f"GATE {finding.code}: {_look(finding)}"
+            text = f"GATE {finding.code}: {finding.look}"
             events.append(
                 Event(
                     now,
@@ -775,9 +775,32 @@ class Evaluator:
             )
         return views
 
-    @staticmethod
+    def _stopping(self, inputs: Inputs) -> bool:
+        """Units are going down and none is coming up (configured units only)."""
+        if not inputs.bus_connected:
+            return False
+        snaps = [
+            snap
+            for svc in self._spec.services.values()
+            if (snap := inputs.units.get(svc.unit)) is not None
+        ]
+        starting = any(
+            s.active_state == "activating"
+            or (s.active_state in ("inactive", "failed") and s.job_pending)
+            for s in snaps
+        )
+        stop_evidence = any(
+            s.active_state == "deactivating"
+            or (s.active_state == "active" and s.job_pending)
+            for s in snaps
+        )
+        return stop_evidence and not starting
+
     def _overall_of(
-        views: Mapping[str, ElementView], findings: Iterable[Finding]
+        self,
+        views: Mapping[str, ElementView],
+        findings: Iterable[Finding],
+        inputs: Inputs,
     ) -> tuple[OverallState, bool, bool]:
         services = [v for v in views.values() if v.kind == "service"]
         counted = [v for v in views.values() if v.required and v.phase == "pre"]
@@ -796,4 +819,6 @@ class Evaluator:
             f.code in _UNIT_CODES for f in findings
         ):
             return OverallState.FAULT, ready, post_ready
+        if self._stopping(inputs):
+            return OverallState.STOPPING, ready, post_ready
         return OverallState.STARTING, ready, post_ready

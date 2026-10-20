@@ -171,7 +171,9 @@ def test_definite_gate_violation() -> None:
     assert gates(ev) == []
     cleared = [e for e in events if e.kind == "cleared"]
     assert [(e.element, e.old) for e in cleared] == [("controller", "gate_violation")]
-    assert "CLEARED gate_violation controller (+20.5 s)" in [e.text for e in cleared]
+    assert f"CLEARED gate_violation controller after {RELAY} (+20.5 s)" in [
+        e.text for e in cleared
+    ]
 
 
 def test_possible_gate_violation() -> None:
@@ -255,3 +257,16 @@ def test_definite_wins_one_finding_per_dependency() -> None:
     [finding] = gates(ev)
     assert finding.code is FindingCode.GATE_VIOLATION
     assert "(relay.router)" in finding.message
+
+
+def test_gate_cleared_text_names_dependency() -> None:
+    ev = make()
+    missing = without("relay.rep", *CONTROLLER_EDGES)
+    ev.update(poll(T + 9, up=missing, units=QUEUED))
+    ev.update(poll(T + 10.3, up=missing, units=STARTED))
+    ev.update(poll(T + 19, units=STARTED))
+    again = {"controller": snap("controller", since=T + 20)}
+    events = ev.update(poll(T + 20.5, units=again))
+    assert [e.text for e in events if e.kind == "cleared"] == [
+        f"CLEARED gate_violation controller after {RELAY} (+20.5 s)"
+    ]

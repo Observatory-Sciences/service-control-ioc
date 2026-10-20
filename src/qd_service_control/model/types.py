@@ -4,7 +4,7 @@ import time
 from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Literal
+from typing import Final, Literal
 
 from qd_service_control.config.spec import Phase
 
@@ -20,6 +20,7 @@ class ElementState(StrEnum):
 class OverallState(StrEnum):
     STOPPED = "stopped"
     STARTING = "starting"
+    STOPPING = "stopping"
     READY = "ready"
     FAULT = "fault"
 
@@ -38,6 +39,11 @@ class FindingCode(StrEnum):
     CPU_SPIN = "cpu_spin"
     GATE_VIOLATION = "gate_violation"
     GATE_VIOLATION_POSSIBLE = "gate_violation_possible"
+
+
+_GATE_CODES: Final = frozenset(
+    {FindingCode.GATE_VIOLATION, FindingCode.GATE_VIOLATION_POSSIBLE}
+)
 
 
 @dataclass(frozen=True)
@@ -73,6 +79,23 @@ class Finding:
         start = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(self.since - 5))
         return f'journalctl -u {self.units[0]} --since "{start}"'
 
+    @property
+    def key(self) -> str:
+        """A stable identity: ``<code>:<element>``, plus the dependency for gates.
+
+        A service can have gate findings against several dependencies, so for
+        those the dependency unit (``units[1]``) is part of the key.
+        """
+        if self.code in _GATE_CODES:
+            return f"{self.code}:{self.element}<{self.units[1]}"
+        return f"{self.code}:{self.element}"
+
+    @property
+    def look(self) -> str:
+        """``<message>, look at <units> (journalctl ...)`` for FAULT and GATE lines."""
+        units = ", ".join(self.units)
+        return f"{self.message}, look at {units} ({self.journal_ref})"
+
 
 @dataclass(frozen=True)
 class ElementView:
@@ -97,6 +120,8 @@ class StackView:
     findings: tuple[Finding, ...]
     units: Mapping[str, UnitSnapshot]
     cpu: Mapping[str, float | None]
+    # False until the evaluator's first update; ``overall`` is then a placeholder.
+    evaluated: bool
 
 
 @dataclass(frozen=True)

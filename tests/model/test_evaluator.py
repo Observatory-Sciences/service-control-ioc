@@ -469,7 +469,7 @@ def test_orderly_whole_stack_stop_has_no_faults() -> None:
         events += ev.update(inputs)
         assert ev.view().overall is not OverallState.FAULT
         assert ev.view().findings == ()
-    assert ev.view().overall is OverallState.STARTING
+    assert ev.view().overall is OverallState.STOPPING
     assert st(ev, "controller") is stopped
     assert st(ev, "controller -> relay.rep") is waiting
     events += ev.update(scenario(T + 204, state="stopped"))
@@ -543,7 +543,13 @@ def test_stuck_job_stops_masking_after_its_timeout(controller: UnitSnapshot) -> 
     events = ev.update(sink2_stopped(T + 50, controller))
     events += ev.update(sink2_stopped(T + 50 + timeout - 1, controller))
     assert no_faults(events)  # within the bound: still a transition
-    assert ev.view().overall is OverallState.STARTING
+    # A queued start reads starting; a stop job on a running unit reads stopping.
+    expected = (
+        OverallState.STOPPING
+        if controller.active_state == "active"
+        else OverallState.STARTING
+    )
+    assert ev.view().overall is expected
     ev.update(sink2_stopped(T + 50 + timeout + 1, controller))
     assert_sink2_faults(ev)
     ev.update(sink2_stopped(T + 5000, controller))
@@ -1083,6 +1089,7 @@ def test_restart_between_polls_is_not_ready_from_the_old_scan() -> None:
     assert ev.view().ready
     assert no_faults(events)
     assert [e.new for e in events if e.kind == "stack" and "post" not in e.text] == [
+        "stopping",
         "starting",
         "ready",
     ]
@@ -1126,3 +1133,38 @@ def test_rule1_still_fires_for_a_dependent_started_after_the_owner() -> None:
     finding = ev.view().elements["relay.rep"].finding
     assert finding is not None
     assert UNITS["controller"] in finding.message
+
+
+def test_view_not_evaluated_before_first_update() -> None:
+    ev = make()
+    assert not ev.view().evaluated
+    ev.update(scenario(T + 1, up=EVERYTHING))
+    assert ev.view().evaluated
+
+
+def test_overall_stopping_during_stop_jobs() -> None:
+    ev = running()
+    ev.update(
+        scenario(T + 200, units={sid: stopping(sid) for sid in UNITS}, poll=False)
+    )
+    assert ev.view().overall is OverallState.STOPPING
+    ev.update(
+        scenario(
+            T + 201,
+            units={
+                "controller": "stopped",
+                "relay": stopping("relay"),
+                "sink@1": stopping("sink@1"),
+                "sink@2": stopping("sink@2"),
+            },
+            poll=False,
+        )
+    )
+    assert st(ev, "controller") is stopped
+    assert ev.view().overall is OverallState.STOPPING
+
+
+def test_overall_starting_not_stopping_on_restart_start_phase() -> None:
+    ev = running()
+    ev.update(scenario(T + 200, state="queued", poll=False))
+    assert ev.view().overall is OverallState.STARTING
