@@ -336,8 +336,11 @@ async def test_start_between_first_update_and_next_poll_is_gate_checked() -> Non
         scans += 1
         if scans == 1:
             clock.now = T + 2  # the next poll starts after the controller
-        else:
-            release.wait(5)
+        elif scans == 2:
+            release.wait(5)  # this scan still sees relay.rep missing
+            # It binds later: a gate finding needs the element to become
+            # ready after the start (ruling 14).
+            h.scan.table = scdemo_table(SPEC, EVERYTHING)
 
     h = Harness(systemd, ScriptedScan(scdemo_table(SPEC, SINKS_UP)), clock)
     h.scan.on_scan = on_scan
@@ -543,6 +546,60 @@ async def test_unreachable_then_not_found_exits_2() -> None:
     assert exc_info.value.code == 2
 
 
+def paced(window: float) -> StackSpec:
+    """Slow polls of 30 s, fast ones of 1 ms, fast for ``window`` after a change."""
+    return replace(
+        SPEC,
+        defaults=replace(
+            SPEC.defaults,
+            poll_interval=30.0,
+            fast_poll_interval=0.001,
+            fast_poll_window=window,
+        ),
+    )
+
+
+@pytest.mark.asyncio
+async def test_fast_polls_while_a_unit_is_activating() -> None:
+    systemd = stack(overrides={UNITS["relay"]: props(UNITS["relay"], "activating")})
+    h = Harness(systemd, ScriptedScan(), FakeClock(T), spec=paced(0.0))
+    async with running(h.core):
+        await h.scan.polls(5)  # times out at the 30 s slow interval
+
+
+@pytest.mark.asyncio
+async def test_fast_polls_while_a_start_is_queued() -> None:
+    systemd = stack(overrides={UNITS["relay"]: props(UNITS["relay"], "queued")})
+    h = Harness(systemd, ScriptedScan(), FakeClock(T), spec=paced(0.0))
+    async with running(h.core):
+        await h.scan.polls(5)
+
+
+@pytest.mark.asyncio
+async def test_slow_polls_when_settled_then_fast_after_a_change() -> None:
+    systemd = stack()
+    h = Harness(
+        systemd,
+        ScriptedScan(scdemo_table(SPEC, EVERYTHING)),
+        FakeClock(T),
+        spec=paced(10.0),
+    )
+    async with running(h.core):
+        await h.wait_text("stack ready")
+        await asyncio.sleep(0.2)
+        settled = h.scan.count
+        await asyncio.sleep(0.2)
+        assert h.scan.count == settled  # waiting out the 30 s interval
+        # The relay stops: no unit is activating, but one changed state, so
+        # polls go fast at once, and stay fast for the window.
+        systemd.bus.fire_properties_changed(
+            UNITS["relay"],
+            UNIT_IFACE,
+            {"ActiveState": "inactive", "SubState": "dead", "MainPID": 0},
+        )
+        await h.scan.polls(5)
+
+
 @pytest.mark.asyncio
 async def test_cpu_per_unit_from_control_group() -> None:
     usage: dict[str, int] = {}
@@ -567,6 +624,50 @@ async def test_cpu_per_unit_from_control_group() -> None:
         cpu = h.core.view().cpu
     assert cpu[UNITS["relay"]] == pytest.approx(50.0)
     assert cpu[UNITS["controller"]] is None
+
+
+@pytest.mark.asyncio
+async def test_cpu_spin_for_a_unit_started_after_the_tool() -> None:
+    # Ruling 15: the tool starts first; sink@2 is read stopped, with no
+    # ControlGroup, then starts and spins. Its cgroup must be read again.
+    sink2 = UNITS["sink@2"]
+    cg = f"/system.slice/{sink2}"
+    stopped = props(sink2, "stopped", ControlGroup="", InvocationID=b"")
+    systemd = stack(overrides={sink2: stopped})
+    clock = FakeClock(T)
+    usage = {cg: 0}
+
+    def tick() -> None:  # each scan: 1 s passes, sink@2 uses a whole core
+        clock.now += 1
+        usage[cg] += 1_000_000
+
+    def read_cpu(group: str) -> int | None:
+        return usage.get(group) if group else None
+
+    spec = replace(SPEC, defaults=replace(SPEC.defaults, cpu_window=3.0))
+    h = Harness(
+        systemd,
+        ScriptedScan(scdemo_table(SPEC, EVERYTHING)),
+        clock,
+        spec=spec,
+        read_cpu=read_cpu,
+    )
+    h.scan.on_scan = tick
+    async with running(h.core):
+        await h.scan.polls()
+        assert h.core.view().cpu[sink2] is None
+        started = props(sink2, "active", T + 5)
+        systemd.units[sink2]["ControlGroup"] = cg  # never in a signal
+        systemd.bus.fire_properties_changed(
+            sink2, "org.freedesktop.systemd1.Service", {"MainPID": started["MainPID"]}
+        )
+        systemd.bus.fire_properties_changed(
+            sink2,
+            UNIT_IFACE,
+            {k: started[k] for k in ("ActiveState", "SubState", "InvocationID")},
+        )
+        await h.wait_text("FAULT cpu_spin sink@2")
+    assert h.core.view().cpu[sink2] == pytest.approx(100.0)
 
 
 @pytest.mark.asyncio

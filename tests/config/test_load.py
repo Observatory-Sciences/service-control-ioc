@@ -230,6 +230,8 @@ services:
     )
     spec = load_config_text(text)
     assert spec.defaults.poll_interval == 2.5
+    assert spec.defaults.fast_poll_interval == 0.1
+    assert spec.defaults.fast_poll_window == 5.0
     assert spec.defaults.restart_limit == 3
     assert spec.services["svc"].timeout == 12
     assert spec.listeners["svc.pre"].timeout == 12

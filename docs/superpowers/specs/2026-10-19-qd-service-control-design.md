@@ -197,12 +197,36 @@ controller has configured relay, so it is `post`.
 
 A gate violation is when a dependent unit started its main process while a
 dependency it is ordered after (`After=`) was not ready in the tool's
-model. Only the dependency's unit state and its `pre` listeners and edges
-count. It is reported as a finding naming both units and the missing
-element. Socket state is polled every 1 s, so an element that appeared
-within one poll interval before the dependent started is reported as a
-*possible* violation, not a definite one. Violations are events and
-findings. They don't by themselves make an element `fault`.
+model, and that element *did* become ready afterwards: the dependent's
+start preceded the element's first ready poll. Only the dependency's unit
+state and its `pre` listeners, files and edges count. It is reported as a
+finding naming both units and the late element.
+
+- **Definite:** a socket poll at or after the dependent's start still saw
+  the element missing, and it became ready later. For the unit itself the
+  verdict is exact: it became active after the dependent started.
+- **Possible:** the last poll before the start saw the element missing and
+  the first poll after it saw it ready, so it appeared within one poll
+  interval of the start. Sockets are polled fast while units start
+  (Section 6.3), so this needs a start within one fast interval (100 ms by
+  default) of the element appearing.
+- **Vouched for by systemd:** no *possible* finding is raised when the
+  dependency unit's exact `ActiveEnterTimestamp` precedes the dependent's
+  start and the element is seen ready at the next poll. The dependency's
+  gate (`READY=1`, an `ExecStartPost=` wait) already said it was ready; with
+  `Type=notify` the dependent starts a few milliseconds after the bind, which
+  no poll interval can resolve. A *definite* violation is still raised when
+  a poll after the start sees the element missing, whatever the timestamp.
+- **Never ready:** an element that never becomes ready (still missing, or
+  `fault`) is not a gate violation. `listener_missing` and `edge_missing`
+  report it (Section 5.2). A check therefore stays pending until the element
+  becomes ready, the dependent stops, or the dependent's next invocation
+  starts.
+
+There is one finding per (dependent invocation, dependency); a definite one
+replaces a possible one. Violations are events and findings. They don't by
+themselves make an element `fault`, and they clear when the dependent's next
+invocation starts.
 
 ### 5.5 Findings
 
@@ -224,8 +248,11 @@ Use dbus-fast on the system bus: `Subscribe`, then `PropertiesChanged` on
 each configured unit's object. Read `ActiveState`, `SubState`, `Result`,
 `NRestarts`, `ExecMainStatus`/`ExecMainCode`, `MainPID`, `ControlGroup`,
 the timestamps (`ActiveEnterTimestamp`, `ExecMainStartTimestamp` and so
-on) and the dependency lists. Reconnect to D-Bus and re-read all state
-after a D-Bus disconnect. Units in `unknown` state meanwhile.
+on) and the dependency lists. systemd never signals `ControlGroup`, so a
+unit's properties are read again whenever its `InvocationID` or `MainPID`
+changes, to pick up the cgroup of a unit that started after the tool.
+Reconnect to D-Bus and re-read all state after a D-Bus disconnect. Units in
+`unknown` state meanwhile.
 
 ### 6.2 Dependencies
 
@@ -235,7 +262,7 @@ between configured units are used as they are. Dependencies through
 unconfigured units (targets and the like) are followed transitively to
 reach configured units.
 
-### 6.3 Sockets (polled every 1 s)
+### 6.3 Sockets (polled every 1 s, every 100 ms while units start)
 
 Read `/proc/net/{tcp,tcp6,udp,udp6}` and map socket inodes to PIDs through
 `/proc/<pid>/fd`, and PIDs to units through the unit's `ControlGroup`
@@ -243,6 +270,14 @@ Read `/proc/net/{tcp,tcp6,udp,udp6}` and map socket inodes to PIDs through
 (D10). Sockets that can't be attributed are external. Use netlink
 `sock_diag` only if `/proc` proves too slow or incomplete at QD scale.
 That is the builder's decision, backed by measurement.
+
+The poll runs every `poll_interval` (default 1 s). While any configured
+unit is `activating` or has a job queued, and for `fast_poll_window`
+seconds (default 5 s) after any unit changed state, it runs every
+`fast_poll_interval` instead (default 100 ms; both set in the YAML
+`defaults`). A unit change during a slow wait starts the fast polls at
+once. The fast polls give each gate check (Section 5.4) a poll close before
+every start, so a cleanly gated start raises no gate finding.
 
 ### 6.4 File checks
 
@@ -273,8 +308,8 @@ in `systemd-journal` (a packaging proposal, Section 9).
 
 ### 6.6 CPU
 
-Each poll, read `cpu.stat` `usage_usec` for each unit's cgroup and
-publish the per-unit CPU as a percentage of one core. A unit above the
+Each poll, read `cpu.stat` `usage_usec` for each unit's cgroup (its
+`ControlGroup`, re-read when the unit starts, Section 6.1) and publish the per-unit CPU as a percentage of one core. A unit above the
 threshold (default 90%) for longer than the window (default 10 s), both
 set in the YAML, raises a "spinning" finding and makes the unit `fault`.
 The fault clears when usage drops.
@@ -346,7 +381,8 @@ output is tested by checking that every PV it uses is served by the IOC
 
 One file per stack. It contains:
 
-- `prefix`, poll interval (default 1 s), default timeouts, CPU threshold,
+- `prefix`, poll intervals (default 1 s, 100 ms while units start, 6.3),
+  default timeouts, CPU threshold,
   restart-loop limits;
 - `services`: unit name, PV name, listeners (`proto`, `port`, optional
   bind address, phase, timeout), file checks, optional/required;
@@ -512,8 +548,10 @@ These weren't discussed. They are my calls, and you can change any of them.
 2. Any `unknown` element makes stack ready false (5.1).
 3. Restart-loop and CPU-spin limits are configurable, with defaults
    (90%, 10 s) (5.2, 6.6).
-4. Gate violations within one poll interval are reported as "possible"
-   (5.4). Violations are findings, not faults.
+4. Gate violations within one (fast, 100 ms) poll interval are reported
+   as "possible", unless the dependency unit became active before the
+   dependent started; elements that never become ready are not gate violations
+   (5.4, rulings 13 and 14 of plan 4). Violations are findings, not faults.
 5. One `journalctl -f` subprocess for all units, split by unit, 20 lines
    and 5120 bytes per unit like `IOCOUT`, with rate-limited updates (6.5).
 6. CPU from cgroup `cpu.stat`, not D-Bus `CPUUsageNSec` (6.6).

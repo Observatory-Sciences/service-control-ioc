@@ -2,10 +2,24 @@
 
 Used by ``Evaluator``. When a configured service D gets a new
 ``exec_main_start_us`` (``t_s``) after the tracker's first socket poll, a
-check is queued. It runs at the first poll with ``poll_time >= t_s`` and looks
-at each service O that D is ordered after: O's unit state plus its ``pre``
-listeners, ``pre`` files and ``pre`` edges where O is the client. There is one
-finding per (D invocation, O); definite wins over possible. The findings never
+check is queued. It starts at the first poll with ``poll_time >= t_s`` and
+looks at each service O that D is ordered after: O's unit state plus its
+``pre`` listeners, ``pre`` files and ``pre`` edges where O is the client.
+
+An element that is ready at that poll is judged at once. One that is not
+ready yet is waited for: a gate finding means D started before an element
+that *did* become ready afterwards, so an element that never becomes ready
+(still missing, or ``fault``) gives no gate finding; ``listener_missing`` and
+``edge_missing`` report it. The wait ends when the element becomes ready,
+when D stops, or when D's next invocation starts.
+
+Each element's verdict uses its poll history: still seen missing at a poll at
+or after ``t_s`` is *definite*; first seen ready at the first poll after
+``t_s`` (it appeared within one poll interval around the start) is
+*possible*, unless O's unit became active (its exact
+``ActiveEnterTimestamp``) before ``t_s``: then O's gate vouched for it and
+there is no finding. There is one finding per (D invocation, O); definite wins over
+possible, replacing a possible finding raised earlier. The findings never
 change element states; they clear when D's next invocation starts.
 """
 
@@ -25,7 +39,8 @@ from qd_service_control.model.types import (
 
 _US: Final = 1_000_000
 
-_Verdict = Literal["definite", "possible"] | None
+_Verdict = Literal["definite", "possible", "clean", "wait"]
+_RUNNING: Final = frozenset({"active", "activating", "reloading"})
 
 
 @dataclass(slots=True)
@@ -34,6 +49,17 @@ class _History:
 
     last_not_ready: float | None = None  # last poll where it was not ready
     first_ready: float | None = None  # first ready poll since then
+
+
+@dataclass(slots=True)
+class _Check:
+    """One dependent invocation's check, from its first poll at or after t_s."""
+
+    start_us: int
+    waiting: dict[str, list[str]]  # O sid -> elements not ready yet
+    definite: dict[str, list[str]]  # O sid -> elements judged definite
+    possible: dict[str, list[str]]  # O sid -> elements judged possible
+    dep_units: dict[str, str]  # O sid -> O unit
 
 
 @dataclass(frozen=True, slots=True)
@@ -72,6 +98,7 @@ class GateTracker:
         self._first_poll: float | None = None
         self._starts: dict[str, int] = {}  # sid -> last exec_main_start_us seen
         self._pending: dict[str, int] = {}  # sid -> exec_main_start_us to check
+        self._checks: dict[str, _Check] = {}  # sid -> check waiting on elements
         self._history: dict[str, _History] = {}
         self._findings: dict[tuple[str, str], Finding] = {}  # (D sid, O sid)
 
@@ -103,21 +130,36 @@ class GateTracker:
             for sid, start_us in list(self._pending.items()):
                 if poll >= start_us / _US:
                     del self._pending[sid]
-                    raised.extend(self._check(sid, start_us, units, states, graph, now))
+                    self._checks[sid] = self._new_check(sid, start_us, graph)
+            for sid, check in list(self._checks.items()):
+                self._advance(check, units, states)
+                self._report(sid, check, now, raised, cleared)
+                if not any(check.waiting.values()):
+                    del self._checks[sid]
         return GateUpdate(raised, cleared)
 
     def _observe_starts(self, units: Mapping[str, UnitSnapshot]) -> list[Finding]:
-        """Queue a check for each new invocation; clear the previous one's findings."""
+        """Queue a check for each new invocation; clear the previous one's findings.
+
+        A dependent that is no longer running has its check dropped: an
+        element that becomes ready while it is down is no violation.
+        """
         cleared: list[Finding] = []
         for sid, svc in self._spec.services.items():
             snap = units.get(svc.unit)
-            if snap is None or not snap.exec_main_start_us:
+            if snap is None:
+                continue
+            if snap.active_state not in _RUNNING:
+                self._pending.pop(sid, None)
+                self._checks.pop(sid, None)
+            if not snap.exec_main_start_us:
                 continue
             start_us = snap.exec_main_start_us
             if self._starts.get(sid) == start_us:
                 continue
             self._starts[sid] = start_us
             self._pending.pop(sid, None)
+            self._checks.pop(sid, None)
             for key in [k for k in self._findings if k[0] == sid]:
                 cleared.append(self._findings.pop(key))
             # Only a start after the first poll has evidence from before it.
@@ -138,36 +180,65 @@ class GateTracker:
                 history.last_not_ready = poll
                 history.first_ready = None
 
-    def _check(
-        self,
-        sid: str,
-        start_us: int,
-        units: Mapping[str, UnitSnapshot],
-        states: Mapping[str, ElementState],
-        graph: DependencyGraph,
-        now: float,
-    ) -> list[Finding]:
+    def _new_check(self, sid: str, start_us: int, graph: DependencyGraph) -> _Check:
+        """What D's invocation is checked against: every element of each O."""
         unit = self._spec.services[sid].unit
-        start = start_us / _US
-        raised: list[Finding] = []
+        check = _Check(start_us, {}, {}, {}, {})
         for dep_unit in sorted(graph.dependencies_of(unit)):
             dep = self._sid_of.get(dep_unit)
             if dep is None or dep == sid:  # unconfigured, or a cycle back to D
                 continue
-            definite: list[str] = []
-            possible: list[str] = []
-            for eid in self._checked[dep]:
-                verdict = self._verdict(eid, dep, start_us, units, states)
-                if verdict == "definite":
-                    definite.append(eid)
+            check.waiting[dep] = list(self._checked[dep])
+            check.definite[dep] = []
+            check.possible[dep] = []
+            check.dep_units[dep] = dep_unit
+        return check
+
+    def _advance(
+        self,
+        check: _Check,
+        units: Mapping[str, UnitSnapshot],
+        states: Mapping[str, ElementState],
+    ) -> None:
+        """Judge every waited-for element that has become ready."""
+        for dep, waiting in check.waiting.items():
+            still: list[str] = []
+            for eid in waiting:
+                verdict = self._verdict(eid, dep, check.start_us, units, states)
+                if verdict == "wait":
+                    still.append(eid)
+                elif verdict == "definite":
+                    check.definite[dep].append(eid)
                 elif verdict == "possible":
-                    possible.append(eid)
-            if definite:
-                code, elements = FindingCode.GATE_VIOLATION, definite
-            elif possible:
-                code, elements = FindingCode.GATE_VIOLATION_POSSIBLE, possible
+                    check.possible[dep].append(eid)
+            check.waiting[dep] = still
+
+    def _report(
+        self,
+        sid: str,
+        check: _Check,
+        now: float,
+        raised: list[Finding],
+        cleared: list[Finding],
+    ) -> None:
+        """Raise one finding per O; a definite one replaces a possible one."""
+        unit = self._spec.services[sid].unit
+        start = check.start_us / _US
+        for dep, dep_unit in check.dep_units.items():
+            held = self._findings.get((sid, dep))
+            if check.definite[dep]:
+                if held is not None and held.code is FindingCode.GATE_VIOLATION:
+                    continue
+                code, elements = FindingCode.GATE_VIOLATION, check.definite[dep]
+            elif check.possible[dep] and held is None:
+                code, elements = (
+                    FindingCode.GATE_VIOLATION_POSSIBLE,
+                    check.possible[dep],
+                )
             else:
                 continue
+            if held is not None:
+                cleared.append(held)
             message = (
                 f"{unit} started at {_clock(start)} before {dep} was ready"
                 f" ({', '.join(elements)})"
@@ -175,7 +246,6 @@ class GateTracker:
             finding = Finding(code, sid, (unit, dep_unit), message, now)
             self._findings[(sid, dep)] = finding
             raised.append(finding)
-        return raised
 
     def _verdict(
         self,
@@ -185,23 +255,26 @@ class GateTracker:
         units: Mapping[str, UnitSnapshot],
         states: Mapping[str, ElementState],
     ) -> _Verdict:
-        """``definite``, ``possible`` or None for one element at the check poll."""
-        state = states.get(eid, ElementState.UNKNOWN)
-        if state is ElementState.UNKNOWN:
-            return None  # no evidence
-        if state is not ElementState.READY:
-            return "definite"
+        """One element's verdict at this poll; ``wait`` until it is ready."""
+        if states.get(eid, ElementState.UNKNOWN) is not ElementState.READY:
+            return "wait"  # not ready (or no evidence) yet
         if eid == dep:
             # The unit: its own timestamp is exact, no poll uncertainty.
             snap = units.get(self._spec.services[dep].unit)
             late = snap is not None and snap.active_enter_us > start_us
-            return "definite" if late else None
+            return "definite" if late else "clean"
         history = self._history.get(eid)
         if history is None or history.last_not_ready is None:
-            return None  # never seen not ready
+            return "clean"  # never seen not ready
         start = start_us / _US
         if history.last_not_ready >= start:
             return "definite"  # a poll after the start still saw it missing
         if history.first_ready is not None and history.first_ready >= start:
-            return "possible"  # became ready within the poll interval around t_s
-        return None
+            # Became ready within the poll interval around t_s. If O's unit
+            # became active (an exact timestamp) before t_s, its gate vouched
+            # for it (READY=1, an ExecStartPost wait): no finding.
+            snap = units.get(self._spec.services[dep].unit)
+            if snap is not None and 0 < snap.active_enter_us < start_us:
+                return "clean"
+            return "possible"
+        return "clean"

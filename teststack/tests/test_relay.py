@@ -23,6 +23,26 @@ async def _assert_clean_exit(proc: ServiceProc) -> None:
     assert proc.stderr_lines == []
 
 
+async def _udp_sockets(pid: int) -> list[str]:
+    """The process's UDP sockets as ``local`` or ``local->remote`` (lsof)."""
+    proc = await asyncio.create_subprocess_exec(
+        "lsof",
+        "-nP",
+        "-a",
+        "-p",
+        str(pid),
+        "-iUDP",
+        "-F",
+        "n",
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.DEVNULL,
+    )
+    out, _ = await proc.communicate()
+    return sorted(
+        line[1:] for line in out.decode().splitlines() if line.startswith("n")
+    )
+
+
 def _configure(rate_hz: int = 20) -> dict[str, object]:
     return {"cmd": "configure", "rate_hz": rate_hz}
 
@@ -455,11 +475,17 @@ async def test_relay_stop_sending_after_fault(port_base):
         await relay.wait_event("ready")
         await zmq_req(f"tcp://127.0.0.1:{port_base + 100}", _configure(rate_hz=100))
         await s1.wait_event("first_datagram")
+        sending = await _udp_sockets(relay.pid)
         stopped = await relay.wait_event(
             "sending_stopped", name="udp@1", reason="fault", timeout=3
         )
         await relay.wait_event("sending_stopped", name="udp@2", reason="fault")
         assert stopped["reason"] == "fault"
+        # Only the traffic stops: both sender sockets stay open, and udp@1
+        # stays connected to sink@1 (ruling 16).
+        await asyncio.sleep(0.2)
+        assert await _udp_sockets(relay.pid) == sending
+        assert any(s.endswith(f"->127.0.0.1:{port_base + 11}") for s in sending)
         client = HttpClient("127.0.0.1", port_base + 104)
         try:
             before = (await client.get_json("/status"))["sent"]

@@ -12,6 +12,8 @@ Sender = Literal["tcp", "connected", "unconnected", "remote"]
 @dataclass(frozen=True)
 class Defaults:
     poll_interval: float = 1.0
+    fast_poll_interval: float = 0.1  # while units start (spec 6.3)
+    fast_poll_window: float = 5.0  # s of fast polls after a unit change
     timeout: float = 30.0
     restart_limit: int = 3
     restart_window: float = 60.0

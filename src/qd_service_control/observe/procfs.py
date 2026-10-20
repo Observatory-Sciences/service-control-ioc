@@ -122,7 +122,15 @@ def scan_sockets(proc_root: Path = Path("/proc")) -> SocketTable:
 
     Raises ``OSError`` if ``/proc`` or a ``/proc/net`` table cannot be read; a
     pid that vanishes or cannot be read is skipped.
+
+    The tables are read before and after the walk of ``/proc/<pid>/fd``. A
+    socket in the second read only was created during the walk, maybe after
+    its pid was walked, so it is left out (the next scan sees it) instead of
+    reading as an unattributed, external socket.
     """
+    before = {
+        sock.inode for proto in ("tcp", "udp") for sock in _read_net(proc_root, proto)
+    }
     owners: dict[int, tuple[int, str | None]] = {}
     children = sorted(proc_root.iterdir())
     for pid_dir in children:
@@ -138,6 +146,7 @@ def scan_sockets(proc_root: Path = Path("/proc")) -> SocketTable:
         OwnedSock(sock, *owners.get(sock.inode, (None, None)))
         for proto in ("tcp", "udp")
         for sock in _read_net(proc_root, proto)
+        if sock.inode in owners or sock.inode in before
     )
     return SocketTable(entries)
 

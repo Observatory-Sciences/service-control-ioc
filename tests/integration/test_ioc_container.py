@@ -79,7 +79,9 @@ def test_start_stop_restart_through_pvs(container) -> None:
     events = container.wait_for(
         lambda ev: "stopped" in stack_news(ev[before:]), 60, "'stack stopped'"
     )[before:]
-    news = stack_news(events)
+    # The fast polls while units change state (spec 6.3) may see the post
+    # edges go before the last unit stops: post-not-ready is fine here.
+    news = [n for n in stack_news(events) if not n.startswith("post-")]
     assert news[: news.index("stopped") + 1] == ["stopping", "stopped"], news
     assert not faults(events), "\n".join(texts(events))
     assert container.get(f"{P}:STATE") == "stopped"

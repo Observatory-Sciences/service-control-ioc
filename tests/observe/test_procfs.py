@@ -2,6 +2,7 @@ from pathlib import Path
 
 import pytest
 
+from qd_service_control.observe import procfs
 from qd_service_control.observe.procfs import (
     TCP_ESTABLISHED,
     TCP_LISTEN,
@@ -212,3 +213,35 @@ def test_scan_sockets_ignores_non_numeric_entries(tmp_path: Path, pid: str) -> N
     proc = fake_proc(tmp_path, net={"tcp": EL9_TCP}, pids={})
     (proc / pid).mkdir()
     assert scan_sockets(proc).entries
+
+
+def test_scan_skips_a_socket_created_during_the_scan(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A sink binds while the scan walks /proc/<pid>/fd: its socket is in the
+    # tables, but its fd was not there when its pid was walked. It must not
+    # read as held by an external process; the next scan attributes it.
+    proc = fake_proc(
+        tmp_path,
+        net={"tcp": EL9_TCP},
+        pids={101: ("0::/system.slice/scdemo-relay.service\n", [RELAY_REP_INODE])},
+    )
+    late = HDR + (
+        "   0: 0100007F:4E2B 00000000:0000 07 00000000:00000000 00:00000000"
+        " 00000000   990        0 777001 2 0000000000000000 0\n"
+    )
+    real = procfs.unit_from_cgroup
+
+    def bind_during_walk(text: str) -> str | None:
+        (proc / "net" / "udp").write_text(late)
+        return real(text)
+
+    monkeypatch.setattr(procfs, "unit_from_cgroup", bind_during_walk)
+    table = scan_sockets(proc)
+    assert not [e for e in table.entries if e.sock.inode == 777001]
+    # Sockets that were there for the whole scan and have no owner are still
+    # reported, as external.
+    assert any(e.unit is None for e in table.entries if e.sock.proto == "tcp")
+    monkeypatch.setattr(procfs, "unit_from_cgroup", real)
+    (entry,) = [e for e in scan_sockets(proc).entries if e.sock.inode == 777001]
+    assert entry.unit is None  # no fd for it in the fake tree: external now

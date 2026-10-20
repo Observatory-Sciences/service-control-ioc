@@ -174,6 +174,11 @@ def _dedup_key(props: Mapping[str, object]) -> tuple[object, ...]:
     )
 
 
+def _cgroup_key(props: Mapping[str, object]) -> tuple[object, ...]:
+    """What a unit's ``ControlGroup`` is re-read for when it changes."""
+    return (_invocation_id(props), props.get("MainPID"))
+
+
 class SystemdObserver:
     """Supervises a D-Bus connection and reports unit snapshots.
 
@@ -190,6 +195,11 @@ class SystemdObserver:
 
     Every ``JobRemoved``, for any unit, also goes to ``on_job_removed`` as
     ``(job_path, result)``, so a caller can match the jobs it queued.
+
+    systemd never signals ``ControlGroup``, so a unit read while stopped
+    would keep an empty one. When a unit's ``InvocationID`` or ``MainPID``
+    changes, its properties are read again and a changed ``ControlGroup`` is
+    emitted in a new snapshot.
     """
 
     def __init__(
@@ -216,6 +226,10 @@ class SystemdObserver:
         self._live = False
         # unit -> signals seen while its read is in flight (only during reads)
         self._in_flight: dict[str, list[dict[str, object]]] = {}
+        # unit -> (InvocationID, MainPID) its ControlGroup was last read for
+        self._cgroup_keys: dict[str, tuple[object, ...]] = {}
+        self._cgroup_due: set[str] = set()  # units whose ControlGroup to re-read
+        self._cgroup_wake = asyncio.Event()
         # Survives reconnects.
         self._after: dict[str, tuple[str, ...]] = {}
 
@@ -261,6 +275,8 @@ class SystemdObserver:
         self._props.clear()
         self._keys.clear()
         self._emitted.clear()
+        self._cgroup_keys.clear()
+        self._cgroup_due.clear()
         reload_done = asyncio.Event()
         for unit in self._units:
             bus.on_properties_changed(unit, partial(self._properties_changed, unit))
@@ -271,6 +287,7 @@ class SystemdObserver:
 
         await self._read_all(bus)
         for unit in self._units:
+            self._cgroup_keys[unit] = _cgroup_key(self._props[unit])
             self._emit(unit)
         self._live = True
         self._bus = bus
@@ -279,11 +296,13 @@ class SystemdObserver:
 
         async with asyncio.TaskGroup() as tg:
             reread = tg.create_task(self._reread_on_reload(bus, reload_done))
+            cgroups = tg.create_task(self._reread_control_groups(bus))
             try:
                 await bus.wait_for_disconnect()
             except EOFError:
                 log.warning("system bus connection lost")
             reread.cancel()
+            cgroups.cancel()
         return True
 
     async def _read_all(self, bus: SystemdBus) -> None:
@@ -339,6 +358,22 @@ class SystemdObserver:
                 ):
                     self._emit(unit)
 
+    async def _reread_control_groups(self, bus: SystemdBus) -> None:
+        """Read ``ControlGroup`` again for units with a new invocation or MainPID."""
+        while True:
+            await self._cgroup_wake.wait()
+            self._cgroup_wake.clear()
+            while self._cgroup_due:
+                unit = self._cgroup_due.pop()
+                fresh = await bus.get_unit_properties(unit)
+                props = self._props.get(unit)
+                if props is None:
+                    continue
+                control_group = fresh.get("ControlGroup", "")
+                if control_group != props.get("ControlGroup", ""):
+                    props["ControlGroup"] = control_group
+                    self._emit(unit)
+
     def _note_in_flight(self, unit: str, changed: Mapping[str, object]) -> None:
         """Remember a signal that arrived while ``unit``'s read was in flight."""
         pending = self._in_flight.get(unit)
@@ -355,6 +390,11 @@ class SystemdObserver:
         props.update(changed)
         if "After" in changed:
             self._after[unit] = _after(props)
+        cgroup_key = _cgroup_key(props)
+        if self._live and cgroup_key != self._cgroup_keys.get(unit):
+            self._cgroup_keys[unit] = cgroup_key
+            self._cgroup_due.add(unit)
+            self._cgroup_wake.set()
         if (
             self._live
             and interface == UNIT_IFACE

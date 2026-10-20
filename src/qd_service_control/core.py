@@ -1,8 +1,11 @@
 """Wire the observers to the evaluator on asyncio and publish its events.
 
 ``Core.run`` is one TaskGroup of the systemd observer (unit snapshots, event
-driven), the poll loop (sockets, CPU and file probes every
-``poll_interval``) and the journal follower. Each new input goes through
+driven), the poll loop (sockets, CPU and file probes) and the journal
+follower. The poll loop runs every ``fast_poll_interval`` while a configured
+unit is activating or has a job queued, and for ``fast_poll_window`` seconds
+after any unit changed state, so a gate check (spec 5.4) has a poll close
+before each start; otherwise every ``poll_interval``. Each new input goes through
 ``Evaluator.update``; the resulting events go to every subscriber.
 
 ``Core.control`` runs one start/stop/restart job on a configured unit or
@@ -15,6 +18,7 @@ straight to ``ready`` instead of passing through ``starting``.
 """
 
 import asyncio
+import contextlib
 import logging
 import time
 from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
@@ -78,6 +82,11 @@ class _Poll:
     error: OSError | None
     usage: dict[str, int | None]  # unit -> usage_usec
     files: dict[str, bool]  # FileSpec id -> probe result
+
+
+def _state_key(snap: UnitSnapshot) -> tuple[object, ...]:
+    """What counts as a unit changing state, for the fast-poll window."""
+    return (snap.active_state, snap.sub_state, snap.job_pending, snap.invocation_id)
 
 
 def _dedup(names: Sequence[str]) -> tuple[str, ...]:
@@ -150,6 +159,8 @@ class Core:
         self._preflight_done = False
         self._preflight_failed = asyncio.Event()
         self._unit_update: asyncio.Handle | None = None
+        self._unit_woke = asyncio.Event()  # a unit changed: re-pick the interval
+        self._last_change = float("-inf")  # loop time a unit last changed state
         self._last_now = float("-inf")  # the evaluator's time never goes back
         # Jobs: waiters by job path (a None result means the bus dropped), and
         # results that came before their waiter (JobRemoved can arrive before
@@ -273,10 +284,28 @@ class Core:
         return ok
 
     async def _poll_loop(self) -> None:
-        interval = self._spec.defaults.poll_interval
+        defaults = self._spec.defaults
+        fast = min(defaults.fast_poll_interval, defaults.poll_interval)
         while True:
             await self._poll_once()
-            await asyncio.sleep(interval)
+            self._unit_woke.clear()
+            if self._polling_fast():
+                await asyncio.sleep(fast)
+                continue
+            # A unit change during a slow wait switches to fast polls at once.
+            with contextlib.suppress(TimeoutError):
+                async with asyncio.timeout(defaults.poll_interval):
+                    await self._unit_woke.wait()
+
+    def _polling_fast(self) -> bool:
+        """Whether a unit is starting, or one changed state within the window."""
+        if any(
+            snap.active_state == "activating" or snap.job_pending
+            for snap in self._snapshots.values()
+        ):
+            return True
+        since = asyncio.get_running_loop().time() - self._last_change
+        return since < self._spec.defaults.fast_poll_window
 
     async def _poll_once(self) -> None:
         now = self._clock()  # before the scan: what it sees is no older than this
@@ -414,7 +443,10 @@ class Core:
     # -- observer callbacks --------------------------------------------------
 
     def _on_snapshot(self, snapshot: UnitSnapshot) -> None:
+        previous = self._snapshots.get(snapshot.name)
         self._snapshots[snapshot.name] = snapshot
+        if previous is not None and _state_key(previous) != _state_key(snapshot):
+            self._last_change = asyncio.get_running_loop().time()
         if self._bus_connected:  # the initial ones wait for on_connection(True)
             self._unit_changed()
 
@@ -443,6 +475,7 @@ class Core:
 
     def _apply_unit_change(self) -> None:
         self._unit_update = None
+        self._unit_woke.set()
         self._evaluator.set_graph(self._graph(self._observer.after_graph()))
         self._update(poll_time=None)
 

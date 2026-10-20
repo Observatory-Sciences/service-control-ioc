@@ -380,23 +380,28 @@ class Relay:
         )
         started.set()
         period = 1.0 / rate
-        reason = "shutdown"  # the only other way out is cancellation
         try:
-            async with asyncio.timeout(faults.stop_sending_after):
-                seq = 0
-                due = loop.time()
-                while True:
-                    transport.sendto(pack_datagram(n, seq), addr)
-                    self.counters.sent[name] = seq = seq + 1
-                    due += period
-                    now = loop.time()
-                    if now - due > MAX_LAG:
-                        due = now
-                    await asyncio.sleep(max(0.0, due - now))
-        except TimeoutError:
-            reason = "fault"  # the stop_sending_after fault fired
+            try:
+                async with asyncio.timeout(faults.stop_sending_after):
+                    seq = 0
+                    due = loop.time()
+                    while True:
+                        transport.sendto(pack_datagram(n, seq), addr)
+                        self.counters.sent[name] = seq = seq + 1
+                        due += period
+                        now = loop.time()
+                        if now - due > MAX_LAG:
+                            due = now
+                        await asyncio.sleep(max(0.0, due - now))
+            except TimeoutError:
+                # The stop_sending_after fault: only the traffic stops. The
+                # socket stays open (and connected, for udp@1) until shutdown.
+                log_event("sending_stopped", name=name, reason="fault")
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                log_event("sending_stopped", name=name, reason="shutdown")
+                raise
         finally:
-            log_event("sending_stopped", name=name, reason=reason)
             transport.close()
 
     async def run_hw(self, rate: int) -> None:

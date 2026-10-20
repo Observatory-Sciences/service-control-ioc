@@ -120,6 +120,11 @@ class ServiceProc:
     def returncode(self) -> int | None:
         return None if self._proc is None else self._proc.returncode
 
+    @property
+    def pid(self) -> int:
+        assert self._proc is not None
+        return self._proc.pid
+
     async def __aenter__(self) -> Self:
         self._proc = await asyncio.create_subprocess_exec(
             sys.executable,

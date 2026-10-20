@@ -168,6 +168,50 @@ async def test_initial_snapshot_then_change(
 
 
 @pytest.mark.asyncio
+async def test_control_group_reread_when_the_unit_starts(recorder: Recorder) -> None:
+    # systemd never signals ControlGroup: a unit read while stopped has an
+    # empty one, and gets it only when it is read again after it starts.
+    stopped = unit_props(
+        ActiveState="inactive",
+        SubState="dead",
+        MainPID=0,
+        ControlGroup="",
+        InvocationID=b"",
+    )
+    systemd = FakeSystemd({"a.service": stopped})
+    task = await started(make_observer(systemd, recorder, ("a.service",)), recorder)
+    try:
+        assert recorder.snapshots[-1].control_group == ""
+        systemd.units["a.service"]["ControlGroup"] = "/system.slice/a.service"
+        systemd.bus.fire_properties_changed(
+            "a.service", SERVICE_IFACE, {"MainPID": 300}
+        )
+        systemd.bus.fire_properties_changed(
+            "a.service",
+            UNIT_IFACE,
+            {
+                "ActiveState": "active",
+                "SubState": "running",
+                "InvocationID": bytes.fromhex("ff" * 16),
+            },
+        )
+        await recorder.wait_for(
+            lambda: recorder.snapshots[-1].control_group == "/system.slice/a.service"
+        )
+        snap = recorder.snapshots[-1]
+        assert (snap.active_state, snap.main_pid) == ("active", 300)
+        # The unit stops: its cgroup goes, and the snapshot says so.
+        systemd.units["a.service"]["ControlGroup"] = ""
+        systemd.bus.fire_properties_changed("a.service", SERVICE_IFACE, {"MainPID": 0})
+        systemd.bus.fire_properties_changed(
+            "a.service", UNIT_IFACE, {"ActiveState": "inactive", "SubState": "dead"}
+        )
+        await recorder.wait_for(lambda: recorder.snapshots[-1].control_group == "")
+    finally:
+        await stop(task)
+
+
+@pytest.mark.asyncio
 async def test_duplicate_unit_signal_ignored(
     systemd: FakeSystemd, recorder: Recorder
 ) -> None:
