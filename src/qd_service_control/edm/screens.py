@@ -173,7 +173,7 @@ def _detail(spec: StackSpec, names: PvNames, sid: str) -> str:
     y += 8
     objects.append(
         edl.multiline(
-            _MARGIN, y, WIDTH - 2 * _MARGIN - 20, _LOG_HEIGHT, names.pv(base, "LOG")
+            _MARGIN, y, WIDTH - 2 * _MARGIN, _LOG_HEIGHT, names.pv(base, "LOG")
         )
     )
     y += _LOG_HEIGHT + 8

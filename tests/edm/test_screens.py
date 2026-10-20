@@ -106,3 +106,13 @@ def test_generate_edm_cli_writes_files(
     assert len(written) == 5
     assert sorted(printed) == sorted(str(p) for p in written)
     assert (out / "scdemo-sc.edl").is_file()
+
+
+def test_detail_log_is_880_by_320(spec: StackSpec, files: dict[str, str]) -> None:
+    names = pv_names(spec)
+    for base in names.services.values():
+        text = files[f"scdemo-{base.lower()}.edl"]
+        log = f'controlPv "{names.pv(base, "LOG")}"'
+        obj = next(o for o in text.split("object ") if log in o)
+        assert re.search(r"^w 880$", obj, re.MULTILINE), base
+        assert re.search(r"^h 320$", obj, re.MULTILINE), base
