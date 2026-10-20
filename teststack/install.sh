@@ -1,16 +1,40 @@
 #!/usr/bin/env bash
 # Install the scdemo test stack on an EL9 host with systemd. Run as root.
 # Idempotent: re-running rebuilds the venv contents and rewrites the same
-# files. Touches only scdemo-* units, /opt/scdemo, /etc/scdemo, the scdemo
-# user (and its systemd-journal membership), the /usr/local/bin/scdemo-dropin
-# symlink, the qd-service-control venv in /opt/qd-service-control/venv and
-# the polkit rule /etc/polkit-1/rules.d/40-scdemo-sc.rules. The tool's own
-# unit, scdemo-sc.service, is installed but neither enabled nor started.
-# Usage: install.sh [source-dir]   (default: the repo root above this script)
+# files. Touches only scdemo-* units (and their 10-user.conf drop-ins),
+# /opt/scdemo, /etc/scdemo, the service user's systemd-journal membership, the
+# /usr/local/bin/scdemo-dropin symlink, the qd-service-control venv in
+# /opt/qd-service-control/venv and the polkit rule
+# /etc/polkit-1/rules.d/40-scdemo-sc.rules. The tool's own unit,
+# scdemo-sc.service, is installed but neither enabled nor started.
+# Usage: install.sh [--user NAME] [source-dir]
+#   --user NAME  run the stack and the tool as NAME (default scdemo). Only
+#                scdemo is created here (in the throwaway container); any other
+#                NAME, e.g. xspress on the test VM, must already exist.
+#   source-dir   default: the repo root above this script
 set -euo pipefail
 
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-SRC=${1:-$(cd "$HERE/.." && pwd)}
+SVC_USER=scdemo
+SRC=
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --user)
+            [ "$#" -ge 2 ] || { echo "install.sh: --user needs a name" >&2; exit 2; }
+            SVC_USER=$2
+            shift 2
+            ;;
+        -*)
+            echo "install.sh: unknown option $1" >&2
+            exit 2
+            ;;
+        *)
+            SRC=$1
+            shift
+            ;;
+    esac
+done
+SRC=${SRC:-$(cd "$HERE/.." && pwd)}
 PREFIX=/opt/scdemo
 TOOL_VENV=/opt/qd-service-control/venv
 CA_VENV=$PREFIX/ca-venv
@@ -28,16 +52,24 @@ for f in "$SRC/pyproject.toml" "$SRC/uv.lock" "$SRC/teststack/pyproject.toml" "$
     [ -f "$f" ] || { echo "install.sh: $f not found (is $SRC the repo root?)" >&2; exit 1; }
 done
 
-# System user and group, no home directory and no login shell.
-if ! getent group scdemo >/dev/null; then
-    groupadd --system scdemo
+# The service user. scdemo is created here, without a home directory or login
+# shell. Any other user (xspress on the test VM) must already exist: this
+# script never creates accounts there.
+if [ "$SVC_USER" = scdemo ]; then
+    if ! getent group scdemo >/dev/null; then
+        groupadd --system scdemo
+    fi
+    if ! getent passwd scdemo >/dev/null; then
+        useradd --system --gid scdemo --no-create-home --home-dir / \
+            --shell /sbin/nologin --comment "scdemo test stack" scdemo
+    fi
+elif ! getent passwd "$SVC_USER" >/dev/null; then
+    echo "install.sh: user $SVC_USER does not exist (only scdemo is created)" >&2
+    exit 1
 fi
-if ! getent passwd scdemo >/dev/null; then
-    useradd --system --gid scdemo --no-create-home --home-dir / \
-        --shell /sbin/nologin --comment "scdemo test stack" scdemo
-fi
-# qd-service-control runs as scdemo in the tests and follows the journal.
-usermod -aG systemd-journal scdemo
+SVC_GROUP=$(id -gn "$SVC_USER")
+# qd-service-control runs as this user in the tests and follows the journal.
+usermod -aG systemd-journal "$SVC_USER"
 
 # The source may be a read-only mount, so build from a private copy.
 tmp=$(mktemp -d)
@@ -79,6 +111,18 @@ ln -sfn "$PREFIX/venv/bin/scdemo-dropin" /usr/local/bin/scdemo-dropin
 
 for unit in "$SRC"/teststack/systemd/scdemo-*.service; do
     install -m 0644 "$unit" "$UNITDIR/$(basename "$unit")"
+    # The unit files say User=scdemo. For another user, a drop-in overrides it
+    # (on the sink template too, so it covers every instance); for scdemo the
+    # drop-in is removed again.
+    dropin=$UNITDIR/$(basename "$unit").d/10-user.conf
+    if [ "$SVC_USER" = scdemo ]; then
+        rm -f "$dropin"
+        rmdir --ignore-fail-on-non-empty "$(dirname "$dropin")" 2>/dev/null || true
+    else
+        install -d -m 0755 "$(dirname "$dropin")"
+        printf '[Service]\nUser=%s\nGroup=%s\n' "$SVC_USER" "$SVC_GROUP" > "$tmp/10-user.conf"
+        install -m 0644 -o root -g root "$tmp/10-user.conf" "$dropin"
+    fi
 done
 
 # Env files: port base plus the gate the waitport style waits on.
@@ -108,10 +152,14 @@ printf '%s\n' "# Installed by scdemo install.sh; overwritten on reinstall." \
     EPICS_CAS_INTF_ADDR_LIST=127.0.0.1 > "$tmp/ca.env"
 install -m 0644 -o root -g root "$tmp/ca.env" "$CONF/ca.env"
 
-# The polkit rule, generated from the same YAML, lets scdemo start, stop and
+# The EDM screens, generated from the same YAML.
+"$TOOL_VENV/bin/qd-service-control" generate-edm "$CONF/scdemo-sc.yaml" "$PREFIX/edm"
+chmod -R a+rX "$PREFIX/edm"
+
+# The polkit rule, generated from the same YAML, lets the service user start, stop and
 # restart exactly the stack's units. polkitd reloads it when it changes.
 "$TOOL_VENV/bin/qd-service-control" generate-polkit "$CONF/scdemo-sc.yaml" \
-    --user scdemo > "$tmp/40-scdemo-sc.rules"
+    --user "$SVC_USER" > "$tmp/40-scdemo-sc.rules"
 install -m 0644 -o root -g root "$tmp/40-scdemo-sc.rules" "$RULE"
 
 systemctl daemon-reload

@@ -1,33 +1,32 @@
-"""Fixtures for the container integration tests (``-m container``).
+"""Fixtures for the integration tests (``-m container``).
 
-They drive the plan 1 Rocky 9 systemd container through
-``teststack/container/rd.sh`` and run ``qd-service-control`` inside it as the
-transient unit ``qdsc-dev``, against real systemd, D-Bus, /proc and journald.
-The tool serves its IOC there too, on the loopback CA of ``/etc/scdemo/ca.env``;
-``Container.ca`` reads and writes its PVs with ``ca_client.py`` inside the
-container. Skipped unless ``QDSC_CONTAINER=1``.
+They run against a real systemd target chosen by ``QDSC_TARGET`` (``container``,
+the plan 1 Rocky 9 container, or ``vm``, the test VM; see ``targets.py``) and
+run ``qd-service-control`` there as the transient unit ``qdsc-dev``, against
+real systemd, D-Bus, /proc and journald. The tool serves its IOC there too, on
+the loopback CA of ``/etc/scdemo/ca.env``; ``Host.ca`` reads and writes its PVs
+with ``ca_client.py`` on the target. Skipped unless a target is selected.
 """
 
 import json
-import os
 import shlex
-import subprocess
 import time
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any, Final
 
 import pytest
 
-REPO: Final = Path(__file__).resolve().parents[2]
-RD: Final = REPO / "teststack" / "container" / "rd.sh"
+from integration.targets import ShellError, Target, target_from_env
+
+__all__ = ["ShellError"]
+
 TOOL_UNIT: Final = "qdsc-dev"
 SC_UNIT: Final = "scdemo-sc.service"
 CA_ENV: Final = "/etc/scdemo/ca.env"
-CA_CLIENT: Final = "/opt/scdemo/ca-venv/bin/python /src/tests/integration/ca_client.py"
+CA_PYTHON: Final = "/opt/scdemo/ca-venv/bin/python"
 TOOL_BIN: Final = "/opt/qd-service-control/venv/bin/qd-service-control"
-CONFIG: Final = "/src/teststack/config/scdemo.yaml"
+CONFIG: Final = "/etc/scdemo/scdemo-sc.yaml"
 RULE: Final = "/etc/polkit-1/rules.d/40-scdemo-sc.rules"
 TOOL_CMD: Final = f"{TOOL_BIN} run {CONFIG} --log-format json"
 STACK_UNITS: Final = (
@@ -42,49 +41,33 @@ DROPIN_UNITS: Final = (
     "scdemo-relay.service",
     "scdemo-controller.service",
 )
-ENABLED: Final = os.environ.get("QDSC_CONTAINER") == "1"
 
 Event = dict[str, object]
 
 
-class ShellError(AssertionError):
-    """A command in the container exited non-zero."""
-
-
 def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
-    if ENABLED:
+    if target_from_env() is not None:
         return
-    skip = pytest.mark.skip(reason="container tests need QDSC_CONTAINER=1")
+    skip = pytest.mark.skip(reason="integration tests need QDSC_TARGET=container|vm")
     for item in items:
         if "container" in item.keywords:
             item.add_marker(skip)
 
 
-def _rd(*args: str, timeout: float = 600) -> str:
-    proc = subprocess.run(
-        [str(RD), *args],
-        capture_output=True,
-        text=True,
-        timeout=timeout,
-        check=False,
-    )
-    if proc.returncode != 0:
-        raise ShellError(
-            f"rd.sh {shlex.join(args)} exited {proc.returncode}\n"
-            f"stdout:\n{proc.stdout}\nstderr:\n{proc.stderr}"
-        )
-    return proc.stdout
-
-
 @dataclass
-class Container:
-    """The running container, with helpers to drive the stack and the tool."""
+class Host:
+    """The prepared target, with helpers to drive the stack and the tool."""
 
+    target: Target
     invocation: str | None = None
 
+    @property
+    def user(self) -> str:
+        return self.target.user
+
     def sh(self, cmd: str, timeout: float = 120) -> str:
-        """Run ``cmd`` with bash in the container as root; raise on non-zero."""
-        return _rd("shell", "-c", cmd, timeout=timeout)
+        """Run ``cmd`` with bash on the target as root; raise on non-zero."""
+        return self.target.sh(cmd, timeout=timeout)
 
     # -- the stack ------------------------------------------------------------
 
@@ -124,10 +107,11 @@ class Container:
     # -- the tool -------------------------------------------------------------
 
     def start_tool(self) -> None:
-        """Run the tool as the transient unit ``qdsc-dev`` (user scdemo)."""
+        """Run the tool as the transient unit ``qdsc-dev`` (the target's user)."""
         self.stop_tool()
         self.sh(
-            f"systemd-run --quiet --unit={TOOL_UNIT} --uid=scdemo --gid=scdemo"
+            f"systemd-run --quiet --unit={TOOL_UNIT}"
+            f" --uid={self.user} --gid={self.user}"
             " -p SupplementaryGroups=systemd-journal"
             f" -p EnvironmentFile={CA_ENV}"
             f" -p Environment=PYTHONUNBUFFERED=1 {TOOL_CMD}"
@@ -191,8 +175,9 @@ class Container:
         """
         pipe = f"{stdin_cmd} | " if stdin_cmd else ""
         tail = "" if check else " || true"
+        client = f"{CA_PYTHON} {self.target.src}/tests/integration/ca_client.py"
         out = self.sh(
-            f"set -o pipefail; set -a; . {CA_ENV}; set +a\n{pipe}{CA_CLIENT} {shlex.join(args)}{tail}",
+            f"set -o pipefail; set -a; . {CA_ENV}; set +a\n{pipe}{client} {shlex.join(args)}{tail}",
             timeout=300,
         )
         return json.loads(out.strip().splitlines()[-1])
@@ -249,7 +234,7 @@ class Container:
         before = len(self._polkit_loads())
         self.sh(
             "set -e\n"
-            f"{TOOL_BIN} generate-polkit /etc/scdemo/scdemo-sc.yaml --user scdemo"
+            f"{TOOL_BIN} generate-polkit {CONFIG} --user {self.user}"
             " > /root/40-scdemo-sc.rules\n"
             f"install -m 0644 /root/40-scdemo-sc.rules {RULE}"
         )
@@ -257,18 +242,18 @@ class Container:
 
 
 @pytest.fixture(scope="session")
-def container_session() -> Container:
-    if not ENABLED:
-        pytest.skip("container tests need QDSC_CONTAINER=1")
-    _rd("up")
-    _rd("install")
-    return Container()
+def container_session() -> Host:
+    target = target_from_env()
+    if target is None:
+        pytest.skip("integration tests need QDSC_TARGET=container|vm")
+    target.prepare()
+    return Host(target)
 
 
 @pytest.fixture
-def container(container_session: Container) -> Iterator[Container]:
-    """The container with the stack and tool stopped and no drop-ins, before
-    and after each test."""
+def container(container_session: Host) -> Iterator[Host]:
+    """The target with the stack and tool stopped and no drop-ins, before and
+    after each test."""
     container_session.clear()
     yield container_session
     container_session.clear()

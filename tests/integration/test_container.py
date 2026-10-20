@@ -1,6 +1,6 @@
 """The core against the real scdemo stack in the Rocky 9 systemd container.
 
-Run with ``QDSC_CONTAINER=1 uv run pytest -m container -v``. The ``container``
+Run with ``QDSC_TARGET=container uv run pytest -m container -v``. The ``container``
 fixture (``conftest.py``) gives a stopped stack with no drop-ins and stops the
 tool, the stack and the drop-ins again afterwards.
 """

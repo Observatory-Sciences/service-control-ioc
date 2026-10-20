@@ -24,10 +24,24 @@ cmd_build() {
     "$DOCKER" build -t "$IMAGE" -f "$HERE/Dockerfile" "$HERE"
 }
 
-# Idempotent: running -> nothing to start; exists but stopped -> remove and
-# recreate (a stopped systemd container has stale state and cannot be trusted);
-# absent -> create. Always ends by waiting for systemd to finish booting.
+# True when the container was created from an older image than the current
+# $IMAGE (the image was rebuilt since), so it must be recreated.
+is_stale() {
+    local have want
+    have=$("$DOCKER" inspect --type container -f '{{.Image}}' "$NAME" 2>/dev/null || true)
+    want=$("$DOCKER" image inspect -f '{{.Id}}' "$IMAGE" 2>/dev/null || true)
+    [ -n "$want" ] && [ "$have" != "$want" ]
+}
+
+# Idempotent: running on the current image -> nothing to start; running on an
+# older image, or exists but stopped -> remove and recreate (a stopped systemd
+# container has stale state and cannot be trusted); absent -> create. Always
+# ends by waiting for systemd to finish booting.
 cmd_up() {
+    if is_running && is_stale; then
+        echo "$NAME runs an older $IMAGE image; recreating"
+        "$DOCKER" rm -f "$NAME" >/dev/null
+    fi
     if is_running; then
         echo "$NAME already running"
     else

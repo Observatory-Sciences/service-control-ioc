@@ -78,7 +78,8 @@ asyncio_mode = "strict"
 filterwarnings = ["error"]
 addopts = "--import-mode=importlib"
 markers = [
-  "container: integration tests in the Rocky 9 systemd container (need QDSC_CONTAINER=1)",
+  "container: needs a real systemd target, chosen by QDSC_TARGET (container or vm)",
+  "screens: drives the generated EDM screens against the live IOC (needs a target)",
 ]
 
 [tool.uv.extra-build-dependencies]

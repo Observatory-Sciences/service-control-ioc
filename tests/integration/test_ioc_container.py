@@ -1,6 +1,6 @@
 """The soft IOC against the real scdemo stack in the Rocky 9 systemd container.
 
-Run with ``QDSC_CONTAINER=1 uv run pytest -m container -v``. The tool runs as
+Run with ``QDSC_TARGET=container uv run pytest -m container -v``. The tool runs as
 ``scdemo`` (the transient ``qdsc-dev`` unit, or ``scdemo-sc.service``), so its
 unit jobs go through the polkit rule that ``install.sh`` generates.
 """
