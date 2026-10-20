@@ -5,11 +5,13 @@ import itertools
 import json
 import logging
 import os
+import re
 import signal
 import sys
 import threading
 from collections.abc import AsyncGenerator, Callable, Iterable, Mapping
 from contextlib import asynccontextmanager
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -31,6 +33,7 @@ from qd_service_control.config.spec import StackSpec
 from qd_service_control.core import Core
 from qd_service_control.model.types import ElementState, Event, OverallState
 from qd_service_control.observe.journal import JournalLine
+from qd_service_control.observe.systemd import SystemdJobError
 
 SPEC = scdemo_spec()
 UNITS = {sid: s.unit for sid, s in SPEC.services.items()}
@@ -636,3 +639,210 @@ async def test_session_failing_before_live_shows_units_unknown() -> None:
         await h.wait_text("service relay unknown: bus disconnected")
         assert states(h.core, "service") == {ElementState.UNKNOWN}
         assert h.core.view().overall is not OverallState.STOPPED
+
+
+# -- control -------------------------------------------------------------------
+
+JOB_TEXT = r"^JOB restart relay scdemo-relay\.service: "
+DENIED = "org.freedesktop.DBus.Error.InteractiveAuthorizationRequired"
+
+
+@asynccontextmanager
+async def ready_stack(
+    spec: StackSpec = SPEC,
+) -> AsyncGenerator[Harness]:
+    h = Harness(
+        stack(), ScriptedScan(scdemo_table(SPEC, EVERYTHING)), FakeClock(T), spec=spec
+    )
+    async with running(h.core):
+        await h.wait_text("stack ready")
+        yield h
+
+
+def jobs(h: Harness) -> list[Event]:
+    return [e for e in h.events if e.kind == "job"]
+
+
+@pytest.mark.asyncio
+async def test_control_restart_done() -> None:
+    async with ready_stack() as h:
+        bus = h.systemd.bus
+        task = asyncio.create_task(h.core.control("relay", "restart"))
+        await h.wait_text("JOB restart relay")
+        assert bus.jobs == [("restart", UNITS["relay"])]
+        assert not task.done()
+        bus.fire_job_removed(1, bus.job_paths[-1], UNITS["relay"], "done")
+        async with asyncio.timeout(2):
+            outcome = await task
+    assert outcome.ok
+    assert (outcome.target, outcome.unit, outcome.verb) == (
+        "relay",
+        UNITS["relay"],
+        "restart",
+    )
+    assert (outcome.result, outcome.detail) == ("done", "")
+    assert outcome.duration >= 0
+    texts = [e.text for e in jobs(h)]
+    assert len(texts) == 2
+    assert re.match(JOB_TEXT + r"queued \(\+", texts[0])
+    assert re.match(JOB_TEXT + r"done \(\d+\.\d s\)", texts[1])
+    assert [e.new for e in jobs(h)] == ["queued", "done"]
+    assert h.core.view().findings == ()
+
+
+@pytest.mark.asyncio
+async def test_control_job_removed_before_reply() -> None:
+    async with ready_stack() as h:
+        h.systemd.bus.auto_result = "done"
+        h.systemd.bus.early = True
+        async with asyncio.timeout(2):
+            outcome = await h.core.control("relay", "restart")
+    assert outcome.result == "done"
+    assert [e.new for e in jobs(h)] == ["queued", "done"]
+
+
+@pytest.mark.asyncio
+async def test_control_job_removed_after_reply() -> None:
+    async with ready_stack() as h:
+        h.systemd.bus.auto_result = "done"
+        async with asyncio.timeout(2):
+            outcome = await h.core.control("relay", "stop")
+    assert outcome.ok
+    assert h.systemd.bus.jobs == [("stop", UNITS["relay"])]
+
+
+@pytest.mark.asyncio
+async def test_control_not_connected() -> None:
+    systemd = stack()
+    systemd.refuse = True
+    h = Harness(systemd, ScriptedScan(), FakeClock(T))
+    async with running(h.core):
+        await h.wait_text("service relay unknown")
+        async with asyncio.timeout(2):
+            outcome = await h.core.control("relay", "start")
+    assert (outcome.result, outcome.detail) == ("not-connected", "no D-Bus connection")
+    assert not outcome.ok
+    assert [e.new for e in jobs(h)] == ["not-connected"]
+    assert re.match(
+        r"^JOB start relay scdemo-relay\.service: not-connected: no D-Bus connection"
+        r" \(\d+\.\d s\)",
+        jobs(h)[0].text,
+    )
+    assert [f.key for f in h.core.view().findings] == ["job_failed:relay"]
+
+
+@pytest.mark.asyncio
+async def test_control_denied_raises_finding_then_clears() -> None:
+    async with ready_stack() as h:
+        bus = h.systemd.bus
+        bus.job_error = SystemdJobError(DENIED, "Interactive authentication required.")
+        async with asyncio.timeout(2):
+            outcome = await h.core.control("relay", "restart")
+        assert (outcome.result, outcome.detail) == ("error", "not authorised (polkit)")
+        view = h.core.view()
+        assert [f.key for f in view.findings] == ["job_failed:relay"]
+        assert view.overall is OverallState.READY  # job findings change no state
+        assert h.count("FAULT job_failed relay: ") == 1
+
+        bus.job_error = None
+        bus.auto_result = "done"
+        async with asyncio.timeout(2):
+            outcome = await h.core.control("relay", "restart")
+        assert outcome.ok
+        assert h.count("CLEARED job_failed relay") == 1
+        assert h.core.view().findings == ()
+    # A refused call is never queued: one queued event, for the second call.
+    assert [e.new for e in jobs(h)] == ["error", "queued", "done"]
+
+
+@pytest.mark.parametrize(
+    ("name", "text", "detail"),
+    [
+        ("org.freedesktop.DBus.Error.AccessDenied", "no", "not authorised (polkit)"),
+        (
+            "org.freedesktop.systemd1.UnitMasked",
+            "Unit is masked.",
+            "org.freedesktop.systemd1.UnitMasked: Unit is masked.",
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_control_error_details(name: str, text: str, detail: str) -> None:
+    async with ready_stack() as h:
+        h.systemd.bus.job_error = SystemdJobError(name, text)
+        async with asyncio.timeout(2):
+            outcome = await h.core.control("relay", "start")
+    assert (outcome.result, outcome.detail) == ("error", detail)
+
+
+@pytest.mark.asyncio
+async def test_control_failed_result_is_finding() -> None:
+    async with ready_stack() as h:
+        h.systemd.bus.auto_result = "failed"
+        async with asyncio.timeout(2):
+            outcome = await h.core.control("relay", "start")
+        assert (outcome.result, outcome.detail) == ("failed", "")
+        assert not outcome.ok
+        (finding,) = h.core.view().findings
+        assert finding.key == "job_failed:relay"
+        assert finding.message == f"start {UNITS['relay']}: failed"
+    assert re.match(
+        r"^JOB start relay scdemo-relay\.service: failed \(\d+\.\d s\)",
+        jobs(h)[-1].text,
+    )
+
+
+@pytest.mark.asyncio
+async def test_control_no_result_times_out() -> None:
+    spec = replace(SPEC, defaults=replace(SPEC.defaults, job_timeout=0.05))
+    async with ready_stack(spec) as h:
+        async with asyncio.timeout(2):
+            outcome = await h.core.control("relay", "restart")
+    assert outcome.result == "no-result"
+    assert not outcome.ok
+    assert [e.new for e in jobs(h)] == ["queued", "no-result"]
+
+
+@pytest.mark.asyncio
+async def test_control_bus_drop_while_waiting() -> None:
+    async with ready_stack() as h:
+        task = asyncio.create_task(h.core.control("relay", "restart"))
+        await h.wait_text("JOB restart relay")
+        h.systemd.bus.drop()
+        async with asyncio.timeout(2):
+            outcome = await task
+    assert (outcome.result, outcome.detail) == ("error", "bus connection lost")
+
+
+@pytest.mark.asyncio
+async def test_control_stack_uses_stack_group() -> None:
+    async with ready_stack() as h:
+        h.systemd.bus.auto_result = "done"
+        async with asyncio.timeout(2):
+            outcome = await h.core.control("stack", "stop")
+        assert h.systemd.bus.jobs == [("stop", ALL_UNIT)]
+    assert (outcome.target, outcome.unit) == ("stack", ALL_UNIT)
+
+
+@pytest.mark.asyncio
+async def test_control_group_and_instance_targets() -> None:
+    async with ready_stack() as h:
+        h.systemd.bus.auto_result = "done"
+        async with asyncio.timeout(2):
+            await h.core.control("all", "start")
+            await h.core.control("sink@2", "restart")
+        assert h.systemd.bus.jobs == [
+            ("start", ALL_UNIT),
+            ("restart", UNITS["sink@2"]),
+        ]
+
+
+@pytest.mark.asyncio
+async def test_control_unknown_target_raises() -> None:
+    h = Harness(stack(), ScriptedScan(), FakeClock(T))
+    with pytest.raises(ValueError, match="nope"):
+        await h.core.control("nope", "start")
+    no_group = replace(SPEC, stack_group=None)
+    h = Harness(stack(), ScriptedScan(), FakeClock(T), spec=no_group)
+    with pytest.raises(ValueError, match="stack"):
+        await h.core.control("stack", "start")

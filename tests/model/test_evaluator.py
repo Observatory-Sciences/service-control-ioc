@@ -15,6 +15,7 @@ from qd_service_control.model.types import (
     ElementState,
     Event,
     FindingCode,
+    JobOutcome,
     OverallState,
     UnitSnapshot,
 )
@@ -1168,3 +1169,69 @@ def test_overall_starting_not_stopping_on_restart_start_phase() -> None:
     ev = running()
     ev.update(scenario(T + 200, state="queued", poll=False))
     assert ev.view().overall is OverallState.STARTING
+
+
+# -- unit jobs ---------------------------------------------------------------
+
+
+def test_job_queued_and_done_events() -> None:
+    ev = running()
+    relay = UNITS["relay"]
+    queued = ev.job_queued("relay", relay, "restart", T + 2)
+    assert [(e.kind, e.element, e.new) for e in queued] == [("job", "relay", "queued")]
+    assert texts(queued) == [f"JOB restart relay {relay}: queued (+2.0 s)"]
+    done = ev.job_finished(
+        JobOutcome("relay", relay, "restart", "done", "", 1.25), T + 3
+    )
+    assert texts(done) == [f"JOB restart relay {relay}: done (1.2 s) (+3.0 s)"]
+    assert [(e.kind, e.new) for e in done] == [("job", "done")]
+    assert ev.view().findings == ()
+
+
+def test_job_failure_is_finding_until_next_ok_job() -> None:
+    ev = running()
+    relay = UNITS["relay"]
+    failed = JobOutcome(
+        "relay", relay, "restart", "error", "not authorised (polkit)", 0.5
+    )
+    events = ev.job_finished(failed, T + 2)
+    (finding,) = ev.view().findings
+    assert finding.key == "job_failed:relay"
+    assert finding.element == "relay"
+    assert finding.units == (relay,)
+    assert finding.message == f"restart {relay}: error: not authorised (polkit)"
+    assert finding.since == T + 2
+    assert texts(events) == [
+        f"JOB restart relay {relay}: error: not authorised (polkit) (0.5 s) (+2.0 s)",
+        f"FAULT job_failed relay: {finding.look}",
+    ]
+    assert events[1].kind == "finding"
+    assert events[1].new == "job_failed"
+    assert events[1].finding == finding
+
+    # Job findings never change states, and survive evaluator updates.
+    ev.update(scenario(T + 3, up=EVERYTHING))
+    view = ev.view()
+    assert view.overall is OverallState.READY
+    assert st(ev, "relay") is ready
+    assert [f.key for f in view.findings] == ["job_failed:relay"]
+
+    # An ok job on another target leaves it; the next ok one on relay clears it.
+    ev.job_finished(JobOutcome("stack", ALL_UNIT, "start", "done", "", 0.1), T + 4)
+    assert [f.key for f in ev.view().findings] == ["job_failed:relay"]
+    events = ev.job_finished(
+        JobOutcome("relay", relay, "restart", "skipped", "", 0.1), T + 5
+    )
+    assert texts(events)[1:] == ["CLEARED job_failed relay (+5.0 s)"]
+    assert events[1].kind == "cleared"
+    assert ev.view().findings == ()
+
+
+def test_job_outcome_ok() -> None:
+    def outcome(result: str) -> JobOutcome:
+        return JobOutcome("relay", "u", "start", result, "", 0.0)
+
+    assert outcome("done").ok
+    assert outcome("skipped").ok
+    for result in ("failed", "canceled", "timeout", "error", "not-connected"):
+        assert not outcome(result).ok

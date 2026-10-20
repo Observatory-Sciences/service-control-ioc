@@ -4,7 +4,9 @@ Pure: time only ever comes from ``Inputs.now``. ``update`` composes small rule
 functions (spec Sections 5.1-5.3, 5.5); the result of each rule is a
 ``_Result`` whose optional ``_Claim`` becomes a held ``Finding``. Gate
 violations (spec Section 5.4) come from ``GateTracker`` in ``model.gate``:
-they are findings and ``gate`` events but never change a state.
+they are findings and ``gate`` events but never change a state. Unit jobs
+(``job_queued``, ``job_finished``) give ``job`` events, and a failed job a
+``job_failed`` finding; those never change a state either.
 """
 
 from collections.abc import Iterable, Mapping
@@ -27,9 +29,11 @@ from qd_service_control.model.types import (
     Event,
     Finding,
     FindingCode,
+    JobOutcome,
     OverallState,
     StackView,
     UnitSnapshot,
+    Verb,
 )
 from qd_service_control.observe.match import (
     EdgeFact,
@@ -186,6 +190,7 @@ class Evaluator:
         self._was_ready: dict[str, tuple[str, ...]] = {}  # id -> invocation key
         self._meta = self._build_meta(spec)
         self._gate = GateTracker(spec)
+        self._job_findings: dict[str, Finding] = {}  # control target -> finding
 
     @staticmethod
     def _build_meta(spec: StackSpec) -> dict[str, _Meta]:
@@ -228,11 +233,59 @@ class Evaluator:
             since=self._overall_since,
             t0=self._t0,
             elements=dict(self._elements),
-            findings=(*self._findings.values(), *self._gate.findings),
+            findings=(
+                *self._findings.values(),
+                *self._gate.findings,
+                *self._job_findings.values(),
+            ),
             units=self._units,
             cpu=self._cpu,
             evaluated=self._overall is not None,
         )
+
+    # -- unit jobs -----------------------------------------------------------
+
+    def _t(self, now: float) -> str:
+        return f"(+{now - self._t0:.1f} s)"
+
+    def job_queued(self, target: str, unit: str, verb: Verb, now: float) -> list[Event]:
+        """systemd queued a job for a control target: one ``job`` event."""
+        text = f"JOB {verb} {target} {unit}: queued {self._t(now)}"
+        return [Event(now, "job", target, None, "queued", text, None)]
+
+    def job_finished(self, outcome: JobOutcome, now: float) -> list[Event]:
+        """A job ended: its ``job`` event, then a raised or cleared ``job_failed``.
+
+        The finding is keyed by target and held until the next ok job on that
+        target. It never changes an element or the overall state.
+        """
+        t = self._t(now)
+        detail = f": {outcome.detail}" if outcome.detail else ""
+        text = (
+            f"JOB {outcome.verb} {outcome.target} {outcome.unit}:"
+            f" {outcome.result}{detail} ({outcome.duration:.1f} s) {t}"
+        )
+        events = [Event(now, "job", outcome.target, None, outcome.result, text, None)]
+        if outcome.ok:
+            old = self._job_findings.pop(outcome.target, None)
+            if old is not None:
+                events.append(_cleared_event(old, now, t))
+            return events
+        finding = Finding(
+            FindingCode.JOB_FAILED,
+            outcome.target,
+            (outcome.unit,),
+            f"{outcome.verb} {outcome.unit}: {outcome.result}{detail}",
+            now,
+        )
+        self._job_findings[outcome.target] = finding
+        text = f"FAULT {finding.code} {finding.element}: {finding.look}"
+        events.append(
+            Event(
+                now, "finding", finding.element, None, finding.code.value, text, finding
+            )
+        )
+        return events
 
     # -- history -------------------------------------------------------------
 

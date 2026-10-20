@@ -132,3 +132,12 @@ def test_setup_logging_replaces_its_own_handler(
     setup_logging("text", "INFO")
     log_event(READY)
     assert len(capsys.readouterr().out.splitlines()) == 1
+
+
+def test_job_events_log_at_info(caplog: pytest.LogCaptureFixture) -> None:
+    job = Event(T, "job", "relay", None, "queued", "JOB restart relay ...", None)
+    with caplog.at_level(logging.INFO, logger="qd_service_control.events"):
+        log_event(job)
+    assert [(r.levelno, r.getMessage()) for r in caplog.records] == [
+        (logging.INFO, "JOB restart relay ...")
+    ]

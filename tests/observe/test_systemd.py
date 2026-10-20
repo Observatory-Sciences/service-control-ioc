@@ -414,3 +414,37 @@ async def test_short_reply_fails_the_session_before_live(
         assert "ListUnitsByNames returned 1 rows for 2 units" in caplog.text
     finally:
         await stop(task)
+
+
+@pytest.mark.asyncio
+async def test_observer_reports_every_job_removed(
+    systemd: FakeSystemd, recorder: Recorder
+) -> None:
+    removed: list[tuple[str, str]] = []
+    observer = SystemdObserver(
+        UNITS,
+        systemd.connect,
+        recorder.on_snapshot,
+        recorder.on_connection,
+        backoff=(0,),
+        on_job_removed=lambda path, result: removed.append((path, result)),
+    )
+    assert observer.bus is None
+    task = await started(observer, recorder)
+    try:
+        assert observer.bus is systemd.bus
+        bus = systemd.bus
+        bus.fire_job_removed(8, "/org/freedesktop/systemd1/job/8", "other.service")
+        bus.fire_job_removed(
+            9, "/org/freedesktop/systemd1/job/9", "a.service", "failed"
+        )
+        assert removed == [
+            ("/org/freedesktop/systemd1/job/8", "done"),
+            ("/org/freedesktop/systemd1/job/9", "failed"),
+        ]
+        systemd.refuse = True
+        bus.drop()
+        await recorder.wait_for(lambda: recorder.connection == [True, False])
+        assert observer.bus is None
+    finally:
+        await stop(task)

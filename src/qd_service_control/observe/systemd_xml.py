@@ -10,6 +10,21 @@ MANAGER_XML: Final = """\
 <node>
  <interface name="org.freedesktop.systemd1.Manager">
   <method name="Subscribe"/>
+  <method name="StartUnit">
+   <arg type="s" name="name" direction="in"/>
+   <arg type="s" name="mode" direction="in"/>
+   <arg type="o" name="job" direction="out"/>
+  </method>
+  <method name="StopUnit">
+   <arg type="s" name="name" direction="in"/>
+   <arg type="s" name="mode" direction="in"/>
+   <arg type="o" name="job" direction="out"/>
+  </method>
+  <method name="RestartUnit">
+   <arg type="s" name="name" direction="in"/>
+   <arg type="s" name="mode" direction="in"/>
+   <arg type="o" name="job" direction="out"/>
+  </method>
   <method name="ListUnitsByNames">
    <arg type="as" name="names" direction="in"/>
    <arg type="a(ssssssouso)" name="units" direction="out"/>

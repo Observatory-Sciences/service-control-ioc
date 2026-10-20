@@ -11,11 +11,11 @@ from collections.abc import Awaitable, Callable, Mapping, Sequence
 from functools import partial
 from typing import Any, Final, Protocol
 
-from dbus_fast import BusType
+from dbus_fast import BusType, DBusError
 from dbus_fast.aio import MessageBus, ProxyInterface
 from dbus_fast.introspection import Node
 
-from qd_service_control.model.types import UnitSnapshot
+from qd_service_control.model.types import UnitSnapshot, Verb
 from qd_service_control.observe.systemd_xml import MANAGER_XML, PROPERTIES_XML
 
 log = logging.getLogger(__name__)
@@ -28,6 +28,12 @@ SERVICE_IFACE: Final = "org.freedesktop.systemd1.Service"
 PROPERTIES_IFACE: Final = "org.freedesktop.DBus.Properties"
 UNIT_PATH_PREFIX: Final = "/org/freedesktop/systemd1/unit/"
 IDLE_JOB: Final = (0, "/")
+JOB_MODE: Final = "replace"
+_JOB_METHODS: Final[dict[Verb, str]] = {
+    "start": "call_start_unit",
+    "stop": "call_stop_unit",
+    "restart": "call_restart_unit",
+}
 DEFAULT_BACKOFF: Final = (0.5, 1.0, 2.0, 5.0)
 MAX_REREADS: Final = 5  # reads of a unit that changes during each read
 
@@ -38,6 +44,15 @@ class SystemdReplyError(Exception):
     """systemd answered in a shape the observer cannot use."""
 
 
+class SystemdJobError(Exception):
+    """systemd refused a job call: the D-Bus error name and its message."""
+
+    def __init__(self, name: str, text: str) -> None:
+        super().__init__(f"{name}: {text}")
+        self.name = name
+        self.text = text
+
+
 JobNewCallback = Callable[[int, str, str], None]  # id, job path, unit
 JobRemovedCallback = Callable[[int, str, str, str], None]  # ... and result
 
@@ -46,6 +61,13 @@ class SystemdBus(Protocol):
     """The systemd D-Bus calls the observer needs, on one connection."""
 
     async def subscribe(self) -> None: ...
+
+    async def unit_job(self, verb: Verb, unit: str) -> str:
+        """``StartUnit``/``StopUnit``/``RestartUnit(unit, "replace")``: the job path.
+
+        Raises ``SystemdJobError`` if systemd (or polkit) refuses the call.
+        """
+        ...
 
     async def list_units_by_names(
         self, names: Sequence[str]
@@ -165,6 +187,9 @@ class SystemdObserver:
     them at once, but may hold back a queued unit's PropertiesChanged until
     the jobs it waits for are done: without them, a unit queued behind
     another would look stopped and idle for that long.
+
+    Every ``JobRemoved``, for any unit, also goes to ``on_job_removed`` as
+    ``(job_path, result)``, so a caller can match the jobs it queued.
     """
 
     def __init__(
@@ -174,8 +199,11 @@ class SystemdObserver:
         on_snapshot: Callable[[UnitSnapshot], None],
         on_connection: Callable[[bool], None],
         backoff: Sequence[float] = DEFAULT_BACKOFF,
+        on_job_removed: Callable[[str, str], None] | None = None,
     ) -> None:
         self._units = tuple(units)
+        self._on_job_removed = on_job_removed
+        self._bus: SystemdBus | None = None  # the live session's connection
         self._connect = connect
         self._on_snapshot = on_snapshot
         self._on_connection = on_connection
@@ -190,6 +218,11 @@ class SystemdObserver:
         self._in_flight: dict[str, list[dict[str, object]]] = {}
         # Survives reconnects.
         self._after: dict[str, tuple[str, ...]] = {}
+
+    @property
+    def bus(self) -> SystemdBus | None:
+        """The live session's bus (for job calls), else None."""
+        return self._bus
 
     def after_graph(self) -> Mapping[str, tuple[str, ...]]:
         """Unit -> its ``After`` list, as last read, for every observed unit."""
@@ -211,6 +244,7 @@ class SystemdObserver:
                     log.exception("systemd D-Bus session failed")
                 finally:
                     self._live = False
+                    self._bus = None
                     bus.disconnect()
                 if not self._connected:
                     # It never went live: still tell the owner, so the units
@@ -239,6 +273,7 @@ class SystemdObserver:
         for unit in self._units:
             self._emit(unit)
         self._live = True
+        self._bus = bus
         self._connected = True
         self._on_connection(True)
 
@@ -336,7 +371,9 @@ class SystemdObserver:
         self._emit_if_changed(unit)
 
     def _job_removed(self, job_id: int, job_path: str, unit: str, result: str) -> None:
-        del job_id, result  # only the path identifies the unit's current job
+        del job_id  # only the path identifies a job
+        if self._on_job_removed is not None:
+            self._on_job_removed(job_path, result)
         self._note_in_flight(unit, {})  # re-read: the reply may predate it
         props = self._props.get(unit)
         if props is None or _job(props)[1:] != (job_path,):
@@ -385,6 +422,16 @@ class DbusFastBus:
 
     async def subscribe(self) -> None:
         await _member(self._manager, "call_subscribe")()
+
+    async def unit_job(self, verb: Verb, unit: str) -> str:
+        call = _member(self._manager, _JOB_METHODS[verb])
+        try:
+            path = await call(unit, JOB_MODE)
+        except DBusError as err:
+            raise SystemdJobError(err.type, err.text) from err
+        if not isinstance(path, str):
+            raise SystemdReplyError(f"{verb} {unit}: job path {path!r}")
+        return path
 
     async def list_units_by_names(
         self, names: Sequence[str]

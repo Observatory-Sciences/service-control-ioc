@@ -8,10 +8,12 @@ build socket tables for the test stack's config; ``FakeClock`` and
 import asyncio
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import replace
+from functools import partial
 from pathlib import Path
 
 from qd_service_control.config.load import load_config
 from qd_service_control.config.spec import StackSpec
+from qd_service_control.model.types import Verb
 from qd_service_control.observe.procfs import (
     TCP_ESTABLISHED,
     TCP_LISTEN,
@@ -101,9 +103,33 @@ class FakeBus:
         self._job_removed_handlers: list[Callable[[int, str, str, str], None]] = []
         self._dropped = asyncio.Event()
         self._user_disconnect = False
+        # Unit jobs: each call is recorded; ``job_error`` makes the call raise;
+        # with ``auto_result`` the job's JobRemoved fires right after the call
+        # returns, or before it returns (the race) when ``early`` is set.
+        self.jobs: list[tuple[str, str]] = []
+        self.job_paths: list[str] = []
+        self.job_error: Exception | None = None
+        self.auto_result: str | None = None
+        self.early = False
 
     async def subscribe(self) -> None:
         self.subscribed = True
+
+    async def unit_job(self, verb: Verb, unit: str) -> str:
+        self.jobs.append((verb, unit))
+        if self.job_error is not None:
+            raise self.job_error
+        job_id = len(self.jobs)
+        path = f"/org/freedesktop/systemd1/job/{job_id}"
+        self.job_paths.append(path)
+        result = self.auto_result
+        if result is not None:
+            if self.early:
+                self.fire_job_removed(job_id, path, unit, result)
+            else:
+                fire = partial(self.fire_job_removed, job_id, path, unit, result)
+                asyncio.get_running_loop().call_soon(fire)
+        return path
 
     async def list_units_by_names(
         self, names: Sequence[str]

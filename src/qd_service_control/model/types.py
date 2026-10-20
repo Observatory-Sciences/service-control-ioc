@@ -8,6 +8,10 @@ from typing import Final, Literal
 
 from qd_service_control.config.spec import Phase
 
+Verb = Literal["start", "stop", "restart"]
+
+_OK_RESULTS: Final = frozenset({"done", "skipped"})
+
 
 class ElementState(StrEnum):
     UNKNOWN = "unknown"
@@ -39,6 +43,7 @@ class FindingCode(StrEnum):
     CPU_SPIN = "cpu_spin"
     GATE_VIOLATION = "gate_violation"
     GATE_VIOLATION_POSSIBLE = "gate_violation_possible"
+    JOB_FAILED = "job_failed"
 
 
 _GATE_CODES: Final = frozenset(
@@ -128,10 +133,36 @@ class StackView:
 class Event:
     ts: float
     kind: Literal[
-        "service", "listener", "file", "edge", "stack", "finding", "cleared", "gate"
+        "service",
+        "listener",
+        "file",
+        "edge",
+        "stack",
+        "finding",
+        "cleared",
+        "gate",
+        "job",
     ]
     element: str
     old: str | None
     new: str | None
     text: str
     finding: Finding | None
+
+
+@dataclass(frozen=True)
+class JobOutcome:
+    """How one start/stop/restart job ended, as ``Core.control`` returns it."""
+
+    target: str  # service id, group id, or "stack"
+    unit: str
+    verb: Verb
+    # systemd's result ("done", "skipped", "failed", "canceled", "timeout",
+    # "dependency", ...), or "error" / "not-connected" / "no-result"
+    result: str
+    detail: str  # "" on success
+    duration: float  # seconds from the call to the result
+
+    @property
+    def ok(self) -> bool:
+        return self.result in _OK_RESULTS

@@ -5,6 +5,10 @@ driven), the poll loop (sockets, CPU and file probes every
 ``poll_interval``) and the journal follower. Each new input goes through
 ``Evaluator.update``; the resulting events go to every subscriber.
 
+``Core.control`` runs one start/stop/restart job on a configured unit or
+group and waits for its ``JobRemoved``; the job's events go to the same
+subscribers.
+
 The first evaluator update waits until there is a socket scan and the bus
 has either connected or failed once, so a tool started after the stack goes
 straight to ``ready`` instead of passing through ``starting``.
@@ -21,7 +25,13 @@ from typing import Final
 from qd_service_control.config.spec import StackSpec
 from qd_service_control.model.deps import DependencyGraph
 from qd_service_control.model.evaluator import Evaluator, Inputs
-from qd_service_control.model.types import Event, StackView, UnitSnapshot
+from qd_service_control.model.types import (
+    Event,
+    JobOutcome,
+    StackView,
+    UnitSnapshot,
+    Verb,
+)
 from qd_service_control.observe.cpu import CpuMeter
 from qd_service_control.observe.files import probe_file
 from qd_service_control.observe.journal import JournalLine, JournalTail
@@ -29,6 +39,7 @@ from qd_service_control.observe.procfs import SocketTable, read_cpu_usec, scan_s
 from qd_service_control.observe.systemd import (
     DEFAULT_BACKOFF,
     SystemdBus,
+    SystemdJobError,
     SystemdObserver,
     SystemdReplyError,
     connect_system_bus,
@@ -39,6 +50,15 @@ log = logging.getLogger(__name__)
 CGROUP_ROOT: Final = Path("/sys/fs/cgroup")
 FATAL_LOAD_STATES: Final = frozenset({"not-found", "error", "bad-setting"})
 WARN_LOAD_STATES: Final = frozenset({"masked"})
+STACK_TARGET: Final = "stack"
+CALL_TIMEOUT: Final = 25.0  # s, for systemd (and polkit) to answer a job call
+FINISHED_TTL: Final = 60.0  # s, to keep a JobRemoved nobody was waiting for yet
+POLKIT_ERRORS: Final = frozenset(
+    {
+        "org.freedesktop.DBus.Error.InteractiveAuthorizationRequired",
+        "org.freedesktop.DBus.Error.AccessDenied",
+    }
+)
 
 
 def read_cgroup_cpu(control_group: str) -> int | None:
@@ -99,6 +119,7 @@ class Core:
             self._on_snapshot,
             self._on_connection,
             backoff=bus_backoff,
+            on_job_removed=self._on_job_removed,
         )
         defaults = spec.defaults
         self._journal = JournalTail(
@@ -130,6 +151,11 @@ class Core:
         self._preflight_failed = asyncio.Event()
         self._unit_update: asyncio.Handle | None = None
         self._last_now = float("-inf")  # the evaluator's time never goes back
+        # Jobs: waiters by job path (a None result means the bus dropped), and
+        # results that came before their waiter (JobRemoved can arrive before
+        # the job call returns), with the monotonic time they arrived.
+        self._job_waiters: dict[str, asyncio.Future[str | None]] = {}
+        self._finished: dict[str, tuple[str, float]] = {}
 
     @property
     def spec(self) -> StackSpec:
@@ -188,6 +214,7 @@ class Core:
             if self._unit_update is not None:
                 self._unit_update.cancel()
                 self._unit_update = None
+            self._fail_job_waiters()  # the bus went with the observer
 
     async def _exit_on_preflight_failure(self) -> None:
         await self._preflight_failed.wait()
@@ -289,6 +316,101 @@ class Core:
         }
         return _Poll(sockets, error, usage, files)
 
+    # -- control -------------------------------------------------------------
+
+    def _control_unit(self, target: str) -> str:
+        """The unit behind a control target: a service, a group or the stack."""
+        spec = self._spec
+        if target in spec.services:
+            return spec.services[target].unit
+        if target in spec.groups:
+            return spec.groups[target].unit
+        if target == STACK_TARGET:
+            if spec.stack_group is None:
+                raise ValueError("no stack_group configured for the stack target")
+            return spec.groups[spec.stack_group].unit
+        raise ValueError(f"unknown control target {target!r}")
+
+    def _event_now(self) -> float:
+        now = max(self._clock(), self._last_now)
+        self._last_now = now
+        return now
+
+    async def control(self, target: str, verb: Verb) -> JobOutcome:
+        """Run ``verb`` on ``target`` as one systemd job and return how it ended.
+
+        ``target`` is a service id, a group id or ``"stack"`` (the
+        ``stack_group``); anything else raises ``ValueError``. Every failure
+        to run the job is an outcome, not an exception. The queued and
+        finished events (and a ``job_failed`` finding) go to the subscribers.
+        """
+        unit = self._control_unit(target)
+        loop = asyncio.get_running_loop()
+        started = loop.time()
+        result, detail = await self._run_job(target, unit, verb)
+        outcome = JobOutcome(target, unit, verb, result, detail, loop.time() - started)
+        for event in self._evaluator.job_finished(outcome, self._event_now()):
+            self._publish(event)
+        return outcome
+
+    async def _run_job(self, target: str, unit: str, verb: Verb) -> tuple[str, str]:
+        """Call systemd and wait for the job's result: ``(result, detail)``."""
+        bus = self._observer.bus
+        if bus is None:
+            return "not-connected", "no D-Bus connection"
+        try:
+            async with asyncio.timeout(CALL_TIMEOUT):
+                path = await bus.unit_job(verb, unit)
+        except SystemdJobError as err:
+            if err.name in POLKIT_ERRORS:
+                return "error", "not authorised (polkit)"
+            return "error", f"{err.name}: {err.text}"
+        except TimeoutError:
+            return "error", "no reply from systemd"
+        except (OSError, EOFError):  # dbus-fast: the connection dropped mid-call
+            return "error", "bus connection lost"
+        for event in self._evaluator.job_queued(target, unit, verb, self._event_now()):
+            self._publish(event)
+        finished = self._finished.pop(path, None)
+        if finished is not None:
+            return finished[0], ""
+        if self._observer.bus is not bus:
+            # The connection dropped during the call: its JobRemoved is lost.
+            return "error", "bus connection lost"
+        waiter: asyncio.Future[str | None] = asyncio.get_running_loop().create_future()
+        self._job_waiters[path] = waiter
+        try:
+            async with asyncio.timeout(self._spec.defaults.job_timeout):
+                result = await waiter
+        except TimeoutError:
+            return "no-result", ""
+        finally:
+            self._job_waiters.pop(path, None)
+        if result is None:
+            return "error", "bus connection lost"
+        return result, ""
+
+    def _on_job_removed(self, job_path: str, result: str) -> None:
+        """The observer's feed of every ``JobRemoved``."""
+        waiter = self._job_waiters.pop(job_path, None)
+        if waiter is not None:
+            if not waiter.done():
+                waiter.set_result(result)
+            return
+        now = asyncio.get_running_loop().time()
+        self._finished = {
+            path: entry
+            for path, entry in self._finished.items()
+            if now - entry[1] <= FINISHED_TTL
+        }
+        self._finished[job_path] = (result, now)
+
+    def _fail_job_waiters(self) -> None:
+        waiters, self._job_waiters = self._job_waiters, {}
+        for waiter in waiters.values():
+            if not waiter.done():
+                waiter.set_result(None)
+
     # -- observer callbacks --------------------------------------------------
 
     def _on_snapshot(self, snapshot: UnitSnapshot) -> None:
@@ -299,6 +421,7 @@ class Core:
     def _on_connection(self, up: bool) -> None:
         self._bus_connected = up
         if not up:
+            self._fail_job_waiters()  # their JobRemoved went with the connection
             # Also after a session that failed before going live: the units
             # are unknown, and the first update must not wait for the bus.
             self._bus_tried = True
