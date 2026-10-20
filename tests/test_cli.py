@@ -1,3 +1,5 @@
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -53,3 +55,21 @@ def test_check_config_pvs_lists_names(capsys):
     pvs = with_pvs[len(plain) :]
     assert len(pvs) == 155
     assert "SCDEMO:SC:SINK1:STATE" in pvs
+
+
+def test_check_config_does_not_import_softioc() -> None:
+    code = (
+        "import sys\n"
+        "from qd_service_control import main\n"
+        "main(['check-config', sys.argv[1], '--pvs'])\n"
+        "assert 'softioc' not in sys.modules\n"
+        "assert 'qd_service_control.ioc.app' not in sys.modules\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-I", "-c", code, str(SCDEMO)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.startswith("services: 4")

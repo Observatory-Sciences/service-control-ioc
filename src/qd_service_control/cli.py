@@ -4,7 +4,7 @@ import argparse
 import asyncio
 import signal
 import sys
-from collections.abc import Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from pathlib import Path
 from typing import Final
 
@@ -62,9 +62,13 @@ class _Stop(Exception):
     """SIGTERM or SIGINT arrived."""
 
 
-async def serve(core: Core) -> None:
-    """Run ``core`` until SIGTERM or SIGINT, then cancel it and return.
+async def serve(
+    core: Core, *, ioc: Callable[[Core], Awaitable[None]] | None = None
+) -> None:
+    """Run ``core`` (and ``ioc(core)``, if given) until SIGTERM or SIGINT.
 
+    Both run in one TaskGroup, so a stop signal cancels and awaits them, and
+    a failure in ``ioc`` stops the core (an ``ExceptionGroup`` propagates).
     ``SystemExit`` from ``Core.run`` (a failed unit preflight) propagates.
     """
     loop = asyncio.get_running_loop()
@@ -76,9 +80,14 @@ async def serve(core: Core) -> None:
         await stop.wait()
         raise _Stop
 
+    async def extra(run_ioc: Callable[[Core], Awaitable[None]]) -> None:
+        await run_ioc(core)  # tasks need a coroutine, the signature takes any awaitable
+
     try:
         async with asyncio.TaskGroup() as tg:
             tg.create_task(stopper())
+            if ioc is not None:
+                tg.create_task(extra(ioc))
             await core.run()
     except* _Stop:
         pass  # graceful: the TaskGroup has cancelled and awaited the core
@@ -87,12 +96,18 @@ async def serve(core: Core) -> None:
             loop.remove_signal_handler(sig)
 
 
-def _run(path: Path, log_format: LogFormat, log_level: str) -> None:
+def _run(path: Path, log_format: LogFormat, log_level: str, *, no_ioc: bool) -> None:
     spec = _load(path)
     setup_logging(log_format, log_level)
     core = Core(spec)
     core.subscribe(log_event)
-    asyncio.run(serve(core))
+    if no_ioc:
+        asyncio.run(serve(core))
+        return
+    # Imported here so that check-config and the generators never load EPICS.
+    from qd_service_control.ioc.app import serve_ioc
+
+    asyncio.run(serve(core, ioc=serve_ioc))
 
 
 def main(argv: Sequence[str] | None = None) -> None:
@@ -103,7 +118,9 @@ def main(argv: Sequence[str] | None = None) -> None:
     check.add_argument(
         "--pvs", action="store_true", help="also print every full PV name"
     )
-    run = commands.add_parser("run", help="observe the stack and log its events")
+    run = commands.add_parser(
+        "run", help="observe the stack, serve it as PVs and log its events"
+    )
     run.add_argument("config", type=Path)
     run.add_argument("--log-format", choices=("text", "json"), default="text")
     run.add_argument(
@@ -112,8 +129,13 @@ def main(argv: Sequence[str] | None = None) -> None:
         type=str.upper,
         choices=("DEBUG", "INFO", "WARNING", "ERROR"),
     )
+    run.add_argument(
+        "--no-ioc",
+        action="store_true",
+        help="observe and log only; do not serve PVs",
+    )
     args = parser.parse_args(argv)
     if args.command == "check-config":
         _check_config(args.config, pvs=args.pvs)
     elif args.command == "run":
-        _run(args.config, args.log_format, args.log_level)
+        _run(args.config, args.log_format, args.log_level, no_ioc=args.no_ioc)

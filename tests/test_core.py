@@ -31,6 +31,7 @@ from fakes import (
 from qd_service_control.cli import serve
 from qd_service_control.config.spec import StackSpec
 from qd_service_control.core import Core
+from qd_service_control.ioc.app import CoreApi
 from qd_service_control.model.types import ElementState, Event, OverallState
 from qd_service_control.observe.journal import JournalLine
 from qd_service_control.observe.systemd import SystemdJobError
@@ -610,6 +611,52 @@ async def test_serve_stops_on_sigterm() -> None:
     os.kill(os.getpid(), signal.SIGTERM)
     async with asyncio.timeout(2):
         await task  # returns normally: a graceful stop
+
+
+@pytest.mark.asyncio
+async def test_serve_runs_ioc_task_and_stops_on_sigterm() -> None:
+    h = Harness(stack(), ScriptedScan(scdemo_table(SPEC, EVERYTHING)), FakeClock(T))
+    started = asyncio.Event()
+    cancelled = asyncio.Event()
+    received: list[Core] = []
+
+    async def fake_ioc(core: Core) -> None:
+        received.append(core)
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cancelled.set()
+
+    task = asyncio.create_task(serve(h.core, ioc=fake_ioc))
+    await h.wait_text("stack ready")
+    async with asyncio.timeout(2):
+        await started.wait()
+    os.kill(os.getpid(), signal.SIGTERM)
+    async with asyncio.timeout(2):
+        await task  # returns normally: a graceful stop
+    assert cancelled.is_set()
+    assert received == [h.core]
+
+
+@pytest.mark.asyncio
+async def test_serve_ioc_failure_stops_the_core() -> None:
+    h = Harness(stack(), ScriptedScan(scdemo_table(SPEC, EVERYTHING)), FakeClock(T))
+
+    async def broken_ioc(core: Core) -> None:
+        raise OSError("port in use")
+
+    with pytest.raises(ExceptionGroup) as exc_info:
+        async with asyncio.timeout(2):
+            await serve(h.core, ioc=broken_ioc)
+    assert exc_info.group_contains(OSError, match="port in use")
+
+
+@pytest.mark.asyncio
+async def test_core_satisfies_core_api() -> None:
+    h = Harness(stack(), ScriptedScan(), FakeClock(T))
+    api: CoreApi = h.core  # ty checks that Core fits the protocol
+    assert api is h.core
 
 
 @pytest.mark.asyncio
