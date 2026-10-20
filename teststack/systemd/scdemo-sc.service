@@ -1,0 +1,15 @@
+[Unit]
+Description=qd-service-control for the scdemo test stack
+After=dbus.service
+[Service]
+Type=simple
+User=scdemo
+Group=scdemo
+SupplementaryGroups=systemd-journal
+Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=/etc/scdemo/ca.env
+ExecStart=/opt/qd-service-control/venv/bin/qd-service-control run /etc/scdemo/scdemo-sc.yaml
+Restart=on-failure
+RestartSec=5
+[Install]
+WantedBy=multi-user.target

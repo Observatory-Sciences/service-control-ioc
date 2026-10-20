@@ -1,7 +1,11 @@
 # Rocky 9 with systemd as PID 1, for local integration of the scdemo stack.
 FROM rockylinux/rockylinux:9
 
+# polkit: the tool runs as scdemo and its unit jobs go through a polkit rule.
+# gcc gcc-c++ make perl python3.11-devel: PyPI has softioc wheels for x86_64
+# only, so on aarch64 uv builds softioc from source.
 RUN dnf install -y systemd python3.11 python3.11-pip iproute procps-ng util-linux \
+        polkit gcc gcc-c++ make perl python3.11-devel \
     && dnf clean all
 
 # uv from PyPI, pinned to the Mac's version: ghcr.io is unreachable from the

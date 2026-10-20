@@ -13,6 +13,7 @@ from qd_service_control.config.spec import StackSpec
 from qd_service_control.core import Core
 from qd_service_control.edm.screens import default_name, generate
 from qd_service_control.logs import LogFormat, log_event, setup_logging
+from qd_service_control.polkit import polkit_rule
 from qd_service_control.pvnames import pv_names
 
 _EXIT_BAD_CONFIG: Final = 2
@@ -55,6 +56,10 @@ def _generate_edm(config: Path, outdir: Path, name: str | None) -> None:
         path = outdir / file_name
         path.write_text(content)
         print(path)
+
+
+def _generate_polkit(config: Path, user: str) -> None:
+    print(polkit_rule(_load(config), user), end="")
 
 
 def _summary(spec: StackSpec) -> str:
@@ -133,6 +138,11 @@ def main(argv: Sequence[str] | None = None) -> None:
     edm.add_argument("config", type=Path)
     edm.add_argument("outdir", type=Path)
     edm.add_argument("--name", help="screen name (default: derived from the prefix)")
+    rule = commands.add_parser(
+        "generate-polkit", help="print the polkit rule for the tool's user"
+    )
+    rule.add_argument("config", type=Path)
+    rule.add_argument("--user", required=True, help="the user the tool runs as")
     run = commands.add_parser(
         "run", help="observe the stack, serve it as PVs and log its events"
     )
@@ -154,5 +164,7 @@ def main(argv: Sequence[str] | None = None) -> None:
         _check_config(args.config, pvs=args.pvs)
     elif args.command == "generate-edm":
         _generate_edm(args.config, args.outdir, args.name)
+    elif args.command == "generate-polkit":
+        _generate_polkit(args.config, args.user)
     elif args.command == "run":
         _run(args.config, args.log_format, args.log_level, no_ioc=args.no_ioc)

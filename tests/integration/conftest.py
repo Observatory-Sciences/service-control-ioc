@@ -3,7 +3,9 @@
 They drive the plan 1 Rocky 9 systemd container through
 ``teststack/container/rd.sh`` and run ``qd-service-control`` inside it as the
 transient unit ``qdsc-dev``, against real systemd, D-Bus, /proc and journald.
-Skipped unless ``QDSC_CONTAINER=1``.
+The tool serves its IOC there too, on the loopback CA of ``/etc/scdemo/ca.env``;
+``Container.ca`` reads and writes its PVs with ``ca_client.py`` inside the
+container. Skipped unless ``QDSC_CONTAINER=1``.
 """
 
 import json
@@ -14,17 +16,20 @@ import time
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Final
+from typing import Any, Final
 
 import pytest
 
 REPO: Final = Path(__file__).resolve().parents[2]
 RD: Final = REPO / "teststack" / "container" / "rd.sh"
 TOOL_UNIT: Final = "qdsc-dev"
-TOOL_CMD: Final = (
-    "/opt/qd-service-control/venv/bin/qd-service-control run"
-    " /src/teststack/config/scdemo.yaml --log-format json"
-)
+SC_UNIT: Final = "scdemo-sc.service"
+CA_ENV: Final = "/etc/scdemo/ca.env"
+CA_CLIENT: Final = "/opt/scdemo/ca-venv/bin/python /src/tests/integration/ca_client.py"
+TOOL_BIN: Final = "/opt/qd-service-control/venv/bin/qd-service-control"
+CONFIG: Final = "/src/teststack/config/scdemo.yaml"
+RULE: Final = "/etc/polkit-1/rules.d/40-scdemo-sc.rules"
+TOOL_CMD: Final = f"{TOOL_BIN} run {CONFIG} --log-format json"
 STACK_UNITS: Final = (
     "scdemo-all.service",
     "scdemo-controller.service",
@@ -104,8 +109,12 @@ class Container:
         self.sh("systemctl reset-failed 'scdemo-*' || true")
 
     def clear(self) -> None:
-        """Stop the tool and the stack, and remove every drop-in."""
+        """Stop the tool (both units) and the stack, and remove every drop-in."""
         self.stop_tool()
+        self.sh(
+            f"systemctl stop {SC_UNIT} 2>/dev/null || true\n"
+            f"systemctl reset-failed {SC_UNIT} 2>/dev/null || true"
+        )
         clears = "\n".join(
             f"scdemo-dropin --no-reload clear {u} || rc=1" for u in DROPIN_UNITS
         )
@@ -120,6 +129,7 @@ class Container:
         self.sh(
             f"systemd-run --quiet --unit={TOOL_UNIT} --uid=scdemo --gid=scdemo"
             " -p SupplementaryGroups=systemd-journal"
+            f" -p EnvironmentFile={CA_ENV}"
             f" -p Environment=PYTHONUNBUFFERED=1 {TOOL_CMD}"
         )
         self.invocation = self.sh(
@@ -169,6 +179,81 @@ class Container:
                 text = "\n".join(str(e.get("text")) for e in events)
                 pytest.fail(f"no {what} within {timeout:g} s; events:\n{text}")
             time.sleep(0.5)
+
+    # -- Channel Access (ca_client.py) ----------------------------------------
+
+    def ca(self, *args: str, stdin_cmd: str | None = None, check: bool = True) -> Any:
+        """Run ``ca_client.py *args`` in the container and parse its JSON.
+
+        ``stdin_cmd`` is a shell command whose output is piped to the client
+        (give ``-`` as the PV). ``check=False`` returns the JSON of a failed
+        ``put`` or ``wait`` instead of raising.
+        """
+        pipe = f"{stdin_cmd} | " if stdin_cmd else ""
+        tail = "" if check else " || true"
+        out = self.sh(
+            f"set -a; . {CA_ENV}; set +a\n{pipe}{CA_CLIENT} {shlex.join(args)}{tail}",
+            timeout=300,
+        )
+        return json.loads(out.strip().splitlines()[-1])
+
+    def get(self, pv: str) -> str:
+        """The value of ``pv`` as text (``ca_client.py get``)."""
+        values = self.ca("get", pv)
+        return str(values[pv])
+
+    def get_int(self, pv: str) -> int:
+        """The value of ``pv`` as a number (``ca_client.py get --int``)."""
+        values = self.ca("get", "--int", pv)
+        return int(values[pv])
+
+    # -- the polkit rule --------------------------------------------------------
+
+    def _polkit_loads(self) -> list[str]:
+        out = self.sh(
+            "journalctl --no-pager -o cat -u polkit.service"
+            " | grep 'Finished loading, compiling and executing' || true"
+        )
+        return out.splitlines()
+
+    def _wait_polkit_reload(self, before: int, rules: int, timeout: float = 30) -> None:
+        """Wait until polkitd has reloaded (a load line after the first
+        ``before``) and now runs ``rules`` rules."""
+        deadline = time.monotonic() + timeout
+        while True:
+            loads = self._polkit_loads()
+            if len(loads) > before and loads[-1].endswith(f"executing {rules} rules"):
+                return
+            if time.monotonic() > deadline:
+                pytest.fail(f"polkitd did not reload to {rules} rules: {loads[-3:]}")
+            time.sleep(0.5)
+
+    def _rule_count(self) -> int:
+        out = self.sh(
+            "ls /etc/polkit-1/rules.d/*.rules /usr/share/polkit-1/rules.d/*.rules"
+            " 2>/dev/null | wc -l"
+        )
+        return int(out.strip())
+
+    def remove_rule(self) -> None:
+        """Remove the tool's polkit rule and wait for polkitd to drop it."""
+        before = len(self._polkit_loads())
+        self.sh(f"rm -f {RULE}")
+        self._wait_polkit_reload(before, self._rule_count())
+
+    def restore_rule(self) -> None:
+        """Regenerate the rule as install.sh does, and wait for polkitd to load
+        it. Does nothing if the rule is already there."""
+        if self.sh(f"test -f {RULE} && echo yes || true").strip() == "yes":
+            return
+        before = len(self._polkit_loads())
+        self.sh(
+            "set -e\n"
+            f"{TOOL_BIN} generate-polkit /etc/scdemo/scdemo-sc.yaml --user scdemo"
+            " > /root/40-scdemo-sc.rules\n"
+            f"install -m 0644 /root/40-scdemo-sc.rules {RULE}"
+        )
+        self._wait_polkit_reload(before, self._rule_count())
 
 
 @pytest.fixture(scope="session")
