@@ -11,6 +11,7 @@ from typing import Final
 from qd_service_control.config.load import ConfigFileError, load_config
 from qd_service_control.config.spec import StackSpec
 from qd_service_control.core import Core
+from qd_service_control.edm.screens import default_name, generate
 from qd_service_control.logs import LogFormat, log_event, setup_logging
 from qd_service_control.pvnames import pv_names
 
@@ -44,6 +45,16 @@ def _check_config(path: Path, *, pvs: bool = False) -> None:
     print("\n".join(lines))
     if pvs:
         print("\n".join(pv_names(spec).all()))
+
+
+def _generate_edm(config: Path, outdir: Path, name: str | None) -> None:
+    spec = _load(config)
+    files = generate(spec, name or default_name(spec.prefix))
+    outdir.mkdir(parents=True, exist_ok=True)
+    for file_name, content in files.items():
+        path = outdir / file_name
+        path.write_text(content)
+        print(path)
 
 
 def _summary(spec: StackSpec) -> str:
@@ -118,6 +129,10 @@ def main(argv: Sequence[str] | None = None) -> None:
     check.add_argument(
         "--pvs", action="store_true", help="also print every full PV name"
     )
+    edm = commands.add_parser("generate-edm", help="write the EDM screens")
+    edm.add_argument("config", type=Path)
+    edm.add_argument("outdir", type=Path)
+    edm.add_argument("--name", help="screen name (default: derived from the prefix)")
     run = commands.add_parser(
         "run", help="observe the stack, serve it as PVs and log its events"
     )
@@ -137,5 +152,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     args = parser.parse_args(argv)
     if args.command == "check-config":
         _check_config(args.config, pvs=args.pvs)
+    elif args.command == "generate-edm":
+        _generate_edm(args.config, args.outdir, args.name)
     elif args.command == "run":
         _run(args.config, args.log_format, args.log_level, no_ioc=args.no_ioc)
