@@ -192,7 +192,7 @@ class Container:
         pipe = f"{stdin_cmd} | " if stdin_cmd else ""
         tail = "" if check else " || true"
         out = self.sh(
-            f"set -a; . {CA_ENV}; set +a\n{pipe}{CA_CLIENT} {shlex.join(args)}{tail}",
+            f"set -o pipefail; set -a; . {CA_ENV}; set +a\n{pipe}{CA_CLIENT} {shlex.join(args)}{tail}",
             timeout=300,
         )
         return json.loads(out.strip().splitlines()[-1])

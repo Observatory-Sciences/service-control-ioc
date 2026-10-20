@@ -124,8 +124,14 @@ def _element_path(spec: StackSpec, element_id: str) -> str:
 
 
 def pv_issues(spec: StackSpec) -> list[tuple[str, str]]:
-    """``(yaml path, message)`` for unsafe, too long and duplicate PV names."""
+    """``(yaml path, message)`` for unsafe, too long and duplicate PV names.
+
+    The prefix and any ``pv`` override must be PV-safe (``[A-Za-z0-9_:-]``):
+    they end up in generated files (EDM screens, the polkit rule's comment).
+    """
     issues: list[tuple[str, str]] = []
+    if not _PV_SAFE.fullmatch(spec.prefix):
+        issues.append(("prefix", f"prefix {spec.prefix!r} is not PV-safe"))
     for service in spec.services.values():
         if not _PV_SAFE.fullmatch(service.pv):
             issues.append(

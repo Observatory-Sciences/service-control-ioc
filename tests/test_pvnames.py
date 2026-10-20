@@ -1,6 +1,7 @@
 from pathlib import Path
 
 import pytest
+import yaml
 
 from qd_service_control.config.load import (
     ConfigFileError,
@@ -138,6 +139,30 @@ services:
 def test_unsafe_pv_override_is_config_issue() -> None:
     text = 'prefix: P\ntop: s\nservices:\n  s: {unit: x.service, pv: "a b"}\n'
     assert issues_of(text)["services.s.pv"] == ["pv 'a b' is not PV-safe"]
+
+
+def load_yaml_scalar(yaml_text: str) -> str:
+    return str(yaml.safe_load(f'"{yaml_text}"'))
+
+
+def issues_prefix(yaml_text: str) -> str:
+    """The prefix value YAML gives for ``yaml_text`` in double quotes."""
+    return load_yaml_scalar(yaml_text)
+
+
+@pytest.mark.parametrize("prefix", ["P X", "P\\nX=1;//", "P\\u2028", 'P\\"Q', "P.Q"])
+def test_unsafe_prefix_is_config_issue(prefix: str) -> None:
+    text = f'prefix: "{prefix}"\ntop: s\nservices:\n  s: {{unit: x.service}}\n'
+    issues = issues_of(text)
+    assert list(issues) == ["prefix"]
+    (message,) = issues["prefix"]
+    assert message == f"prefix {issues_prefix(prefix)!r} is not PV-safe"
+
+
+def test_safe_prefixes_load() -> None:
+    assert load_config(SCDEMO).prefix == "SCDEMO:SC"
+    text = 'prefix: "A-b_9:X"\ntop: s\nservices:\n  s: {unit: x.service}\n'
+    assert load_config_text(text).prefix == "A-b_9:X"
 
 
 def test_unknown_stack_group_is_config_issue() -> None:
