@@ -36,6 +36,8 @@ _JOB_METHODS: Final[dict[Verb, str]] = {
 }
 DEFAULT_BACKOFF: Final = (0.5, 1.0, 2.0, 5.0)
 MAX_REREADS: Final = 5  # reads of a unit that changes during each read
+JOB_IFACE: Final = "org.freedesktop.systemd1.Job"
+JOB_TYPE: Final = "JobType"  # set on a unit's props from its job object
 
 PropertiesCallback = Callable[[str, dict[str, object]], None]
 
@@ -77,6 +79,10 @@ class SystemdBus(Protocol):
 
     async def get_unit_properties(self, unit: str) -> dict[str, object]:
         """Unit (and, for a service, Service) properties, variants unpacked."""
+        ...
+
+    async def job_type(self, job_path: str) -> str:
+        """The job's ``JobType`` (``start``, ``stop``, ...); "" if it is gone."""
         ...
 
     def on_properties_changed(self, unit: str, cb: PropertiesCallback) -> None:
@@ -160,6 +166,7 @@ def snapshot_from_props(name: str, props: Mapping[str, object]) -> UnitSnapshot:
         control_group=_str(props, "ControlGroup"),
         invocation_id=_invocation_id(props),
         after=_after(props),
+        job_type=_str(props, JOB_TYPE) if _job(props) != IDLE_JOB else "",
     )
 
 
@@ -171,6 +178,7 @@ def _dedup_key(props: Mapping[str, object]) -> tuple[object, ...]:
         _invocation_id(props),
         props.get("NRestarts"),
         props.get("MainPID"),
+        props.get(JOB_TYPE),
     )
 
 
@@ -200,6 +208,10 @@ class SystemdObserver:
     would keep an empty one. When a unit's ``InvocationID`` or ``MainPID``
     changes, its properties are read again and a changed ``ControlGroup`` is
     emitted in a new snapshot.
+
+    Neither ``JobNew`` nor the unit's ``Job`` says what kind of job it is, so
+    each new job's ``JobType`` is read from the job object and emitted with
+    the unit's next snapshot ("" until then, or if the job is already gone).
     """
 
     def __init__(
@@ -229,7 +241,9 @@ class SystemdObserver:
         # unit -> (InvocationID, MainPID) its ControlGroup was last read for
         self._cgroup_keys: dict[str, tuple[object, ...]] = {}
         self._cgroup_due: set[str] = set()  # units whose ControlGroup to re-read
-        self._cgroup_wake = asyncio.Event()
+        self._cgroup_wake = asyncio.Event()  # also wakes the job-type reads
+        self._job_paths: dict[str, str] = {}  # unit -> job path seen last
+        self._job_due: dict[str, str] = {}  # unit -> job path to read the type of
         # Survives reconnects.
         self._after: dict[str, tuple[str, ...]] = {}
 
@@ -277,6 +291,8 @@ class SystemdObserver:
         self._emitted.clear()
         self._cgroup_keys.clear()
         self._cgroup_due.clear()
+        self._job_paths.clear()
+        self._job_due.clear()
         reload_done = asyncio.Event()
         for unit in self._units:
             bus.on_properties_changed(unit, partial(self._properties_changed, unit))
@@ -288,6 +304,7 @@ class SystemdObserver:
         await self._read_all(bus)
         for unit in self._units:
             self._cgroup_keys[unit] = _cgroup_key(self._props[unit])
+            self._track_job(unit)
             self._emit(unit)
         self._live = True
         self._bus = bus
@@ -296,7 +313,7 @@ class SystemdObserver:
 
         async with asyncio.TaskGroup() as tg:
             reread = tg.create_task(self._reread_on_reload(bus, reload_done))
-            cgroups = tg.create_task(self._reread_control_groups(bus))
+            cgroups = tg.create_task(self._read_details(bus))
             try:
                 await bus.wait_for_disconnect()
             except EOFError:
@@ -353,16 +370,26 @@ class SystemdObserver:
             reload_done.clear()
             await self._read_all(bus)
             for unit in self._units:
+                self._job_paths.pop(unit, None)  # the read replaced its props
+                self._track_job(unit)
                 if snapshot_from_props(unit, self._props[unit]) != self._emitted.get(
                     unit
                 ):
                     self._emit(unit)
 
-    async def _reread_control_groups(self, bus: SystemdBus) -> None:
-        """Read ``ControlGroup`` again for units with a new invocation or MainPID."""
+    async def _read_details(self, bus: SystemdBus) -> None:
+        """Read what systemd never signals: new jobs' types, and ``ControlGroup``
+        again for units with a new invocation or MainPID."""
         while True:
             await self._cgroup_wake.wait()
             self._cgroup_wake.clear()
+            while self._job_due:
+                unit, path = self._job_due.popitem()
+                job_type = await bus.job_type(path)
+                props = self._props.get(unit)
+                if props is not None and _job(props)[1:] == (path,):
+                    props[JOB_TYPE] = job_type
+                    self._emit_if_changed(unit)
             while self._cgroup_due:
                 unit = self._cgroup_due.pop()
                 fresh = await bus.get_unit_properties(unit)
@@ -373,6 +400,22 @@ class SystemdObserver:
                 if control_group != props.get("ControlGroup", ""):
                     props["ControlGroup"] = control_group
                     self._emit(unit)
+
+    def _track_job(self, unit: str) -> None:
+        """On a new job for ``unit``: forget the old type, queue a type read."""
+        props = self._props.get(unit)
+        if props is None:
+            return
+        job = _job(props)
+        path = str(job[1]) if len(job) > 1 else "/"
+        if self._job_paths.get(unit) == path:
+            return
+        self._job_paths[unit] = path
+        props.pop(JOB_TYPE, None)
+        self._job_due.pop(unit, None)
+        if job != IDLE_JOB:
+            self._job_due[unit] = path
+            self._cgroup_wake.set()
 
     def _note_in_flight(self, unit: str, changed: Mapping[str, object]) -> None:
         """Remember a signal that arrived while ``unit``'s read was in flight."""
@@ -390,6 +433,8 @@ class SystemdObserver:
         props.update(changed)
         if "After" in changed:
             self._after[unit] = _after(props)
+        if self._live:
+            self._track_job(unit)
         cgroup_key = _cgroup_key(props)
         if self._live and cgroup_key != self._cgroup_keys.get(unit):
             self._cgroup_keys[unit] = cgroup_key
@@ -408,6 +453,8 @@ class SystemdObserver:
         if props is None:  # not ours, or not read yet (the read has the job)
             return
         props["Job"] = (job_id, job_path)
+        if self._live:
+            self._track_job(unit)
         self._emit_if_changed(unit)
 
     def _job_removed(self, job_id: int, job_path: str, unit: str, result: str) -> None:
@@ -419,6 +466,8 @@ class SystemdObserver:
         if props is None or _job(props)[1:] != (job_path,):
             return  # not ours, or the unit already has another job (or none)
         props["Job"] = IDLE_JOB
+        if self._live:
+            self._track_job(unit)
         self._emit_if_changed(unit)
 
     def _emit_if_changed(self, unit: str) -> None:
@@ -486,6 +535,18 @@ class DbusFastBus:
         if unit.endswith(".service"):
             props.update(await get_all(SERVICE_IFACE, unpack_variants=True))
         return props
+
+    async def job_type(self, job_path: str) -> str:
+        props = self._bus.get_proxy_object(
+            SYSTEMD, job_path, self._PROPERTIES_NODE
+        ).get_interface(PROPERTIES_IFACE)
+        try:
+            value = await _member(props, "call_get")(
+                JOB_IFACE, JOB_TYPE, unpack_variants=True
+            )
+        except DBusError:
+            return ""  # the job finished before we asked (UnknownObject)
+        return value if isinstance(value, str) else ""
 
     def on_properties_changed(self, unit: str, cb: PropertiesCallback) -> None:
         def handler(

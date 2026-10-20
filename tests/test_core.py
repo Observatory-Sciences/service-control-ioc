@@ -366,6 +366,7 @@ async def test_orderly_stop_has_no_faults() -> None:
     clock = FakeClock(T)
     h = Harness(stack(), ScriptedScan(scdemo_table(SPEC, EVERYTHING)), clock)
     stop_job = (2, "/org/freedesktop/systemd1/job/2")
+    h.systemd.job_types[stop_job[1]] = "stop"  # what the job object reports
     async with running(h.core):
         await h.wait_text("stack post-ready")
         clock.now = T + 1

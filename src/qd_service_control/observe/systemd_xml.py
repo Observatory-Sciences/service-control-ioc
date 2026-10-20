@@ -54,6 +54,11 @@ PROPERTIES_XML: Final = """\
    <arg type="s" name="interface_name" direction="in"/>
    <arg type="a{sv}" name="props" direction="out"/>
   </method>
+  <method name="Get">
+   <arg type="s" name="interface_name" direction="in"/>
+   <arg type="s" name="property_name" direction="in"/>
+   <arg type="v" name="value" direction="out"/>
+  </method>
   <signal name="PropertiesChanged">
    <arg type="s" name="interface_name"/>
    <arg type="a{sv}" name="changed_properties"/>

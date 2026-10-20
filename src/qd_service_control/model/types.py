@@ -68,6 +68,9 @@ class UnitSnapshot:
     control_group: str
     invocation_id: str
     after: tuple[str, ...]
+    job_type: str = (
+        ""  # the pending job's JobType ("start", "stop", ...); "" = none/unknown
+    )
 
 
 @dataclass(frozen=True)

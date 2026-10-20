@@ -212,6 +212,32 @@ async def test_control_group_reread_when_the_unit_starts(recorder: Recorder) -> 
 
 
 @pytest.mark.asyncio
+async def test_job_type_tracked_from_job_new(recorder: Recorder) -> None:
+    # JobNew carries no job type: the observer reads it from the job object,
+    # so a start job on an active-looking unit is not taken for a stop.
+    start_path = "/org/freedesktop/systemd1/job/3"
+    systemd = FakeSystemd({"a.service": unit_props(Job=(3, start_path))})
+    systemd.job_types[start_path] = "start"
+    task = await started(make_observer(systemd, recorder, ("a.service",)), recorder)
+    try:
+        await recorder.wait_for(lambda: recorder.snapshots[-1].job_type == "start")
+        systemd.bus.fire_job_removed(3, start_path, "a.service")
+        assert recorder.snapshots[-1].job_type == ""
+        assert not recorder.snapshots[-1].job_pending
+        stop_path = "/org/freedesktop/systemd1/job/4"
+        systemd.bus.fire_job_new(4, stop_path, "a.service", job_type="stop")
+        await recorder.wait_for(lambda: recorder.snapshots[-1].job_type == "stop")
+        assert recorder.snapshots[-1].job_pending
+        # A job gone before its type was read stays unknown ("").
+        systemd.bus.fire_job_removed(4, stop_path, "a.service")
+        systemd.bus.fire_job_new(5, "/org/freedesktop/systemd1/job/5", "a.service")
+        await recorder.wait_for(lambda: recorder.snapshots[-1].job_pending)
+        assert recorder.snapshots[-1].job_type == ""
+    finally:
+        await stop(task)
+
+
+@pytest.mark.asyncio
 async def test_duplicate_unit_signal_ignored(
     systemd: FakeSystemd, recorder: Recorder
 ) -> None:

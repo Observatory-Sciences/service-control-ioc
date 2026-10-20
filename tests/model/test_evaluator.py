@@ -421,7 +421,7 @@ def no_faults(events: Sequence[Event]) -> bool:
 
 def stopping(sid: str) -> UnitSnapshot:
     """Still running, with its stop job queued."""
-    return snap(sid, job_pending=True)
+    return snap(sid, job_pending=True, job_type="stop")
 
 
 def test_orderly_whole_stack_stop_has_no_faults() -> None:
@@ -535,7 +535,7 @@ def assert_sink2_faults(ev: Evaluator) -> None:
 
 @pytest.mark.parametrize(
     "controller",
-    [snap("controller", "queued"), snap("controller", job_pending=True)],
+    [snap("controller", "queued"), stopping("controller")],
     ids=["queued", "active-with-job"],
 )
 def test_stuck_job_stops_masking_after_its_timeout(controller: UnitSnapshot) -> None:
@@ -1162,6 +1162,45 @@ def test_overall_stopping_during_stop_jobs() -> None:
         )
     )
     assert st(ev, "controller") is stopped
+    assert ev.view().overall is OverallState.STOPPING
+
+
+def test_start_job_on_an_active_unit_is_not_stop_evidence() -> None:
+    # The stack starts: the controller is already active, but its start job
+    # (Type=notify) has not been removed yet, and its edges are not up. That
+    # is a start in progress, never ``stopping``.
+    ev = make()
+    controller = snap("controller", since=T + 0.2, job_pending=True, job_type="start")
+    ev.update(
+        scenario(
+            T + 0.3,
+            up=without(*(e for e in EVERYTHING if e.startswith("controller -> "))),
+            units={"controller": controller},
+        )
+    )
+    assert ev.view().overall is OverallState.STARTING
+
+
+def test_stop_job_on_an_active_unit_is_stop_evidence() -> None:
+    ev = running()
+    ev.update(
+        scenario(
+            T + 200,
+            up=without(*(e for e in EVERYTHING if e.startswith("controller -> "))),
+            units={"controller": "stopped", "relay": stopping("relay")},
+            poll=False,
+        )
+    )
+    assert ev.view().overall is OverallState.STOPPING
+    restart = snap("relay", job_pending=True, job_type="restart")
+    ev.update(
+        scenario(
+            T + 201,
+            up=without(*(e for e in EVERYTHING if e.startswith("controller -> "))),
+            units={"controller": "stopped", "relay": restart},
+            poll=False,
+        )
+    )
     assert ev.view().overall is OverallState.STOPPING
 
 

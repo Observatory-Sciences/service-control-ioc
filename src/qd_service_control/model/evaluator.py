@@ -67,6 +67,7 @@ _LINUX_SIGNALS: Final = {
     14: "SIGALRM",
     15: "SIGTERM",
 }
+_STOP_JOB_TYPES: Final = frozenset({"stop", "restart", "try-restart"})
 _UNIT_CODES: Final = frozenset(
     {
         FindingCode.UNIT_NOT_FOUND,
@@ -842,9 +843,15 @@ class Evaluator:
             or (s.active_state in ("inactive", "failed") and s.job_pending)
             for s in snaps
         )
+        # An active unit's pending job counts only if it is a stop or restart:
+        # a Type=notify unit is active before its start job is removed.
         stop_evidence = any(
             s.active_state == "deactivating"
-            or (s.active_state == "active" and s.job_pending)
+            or (
+                s.active_state == "active"
+                and s.job_pending
+                and s.job_type in _STOP_JOB_TYPES
+            )
             for s in snaps
         )
         return stop_evidence and not starting

@@ -123,7 +123,10 @@ makes it false (anti-goal 1). The overall state is one of these:
 - `starting`: not ready, nothing is `fault`, and at least one unit is active
   or activating.
 - `stopping`: not ready, nothing is `fault`, and units are stopping (a stop
-  job is pending or a unit is deactivating) with none starting.
+  or restart job is pending or a unit is deactivating) with none starting.
+  The job's kind is its `JobType`, read from the job object (Section 6.1): a
+  `Type=notify` unit is already active while its start job is still
+  pending, and that is a start, never `stopping`.
 - `ready`: stack ready is true.
 - `fault`: anything else, meaning at least one element is `fault`.
 
@@ -251,6 +254,9 @@ the timestamps (`ActiveEnterTimestamp`, `ExecMainStartTimestamp` and so
 on) and the dependency lists. systemd never signals `ControlGroup`, so a
 unit's properties are read again whenever its `InvocationID` or `MainPID`
 changes, to pick up the cgroup of a unit that started after the tool.
+Neither `JobNew` nor a unit's `Job` property says what kind of job is
+pending, so each new job's `JobType` is read from its job object
+(`org.freedesktop.systemd1.Job`); a job already gone reads as unknown.
 Reconnect to D-Bus and re-read all state after a D-Bus disconnect. Units in
 `unknown` state meanwhile.
 

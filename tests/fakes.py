@@ -73,6 +73,7 @@ class FakeSystemd:
         self.aliases: dict[str, str] = {}  # alias -> canonical unit name
         self.short_reply = False  # ListUnitsByNames drops its last row
         self.read_error: Exception | None = None  # GetAll raises this
+        self.job_types: dict[str, str] = {}  # job path -> JobType; absent = gone
 
     async def connect(self) -> "FakeBus":
         self.attempts += 1
@@ -122,6 +123,7 @@ class FakeBus:
         job_id = len(self.jobs)
         path = f"/org/freedesktop/systemd1/job/{job_id}"
         self.job_paths.append(path)
+        self.systemd.job_types[path] = verb
         result = self.auto_result
         if result is not None:
             if self.early:
@@ -164,6 +166,9 @@ class FakeBus:
             self.systemd.holding.clear()
         return answer
 
+    async def job_type(self, job_path: str) -> str:
+        return self.systemd.job_types.get(job_path, "")
+
     def on_properties_changed(
         self, unit: str, cb: Callable[[str, dict[str, object]], None]
     ) -> None:
@@ -196,9 +201,14 @@ class FakeBus:
         for cb in self._prop_handlers.get(unit, []):
             cb(interface, dict(changed))
 
-    def fire_job_new(self, job_id: int, job_path: str, unit: str) -> None:
+    def fire_job_new(
+        self, job_id: int, job_path: str, unit: str, job_type: str | None = None
+    ) -> None:
         """Manager ``JobNew``; the unit's ``Job`` changes, without a
-        PropertiesChanged (systemd may send that one much later)."""
+        PropertiesChanged (systemd may send that one much later). ``job_type``
+        is what the job object reports (None: it is gone already)."""
+        if job_type is not None:
+            self.systemd.job_types[job_path] = job_type
         if unit in self.systemd.units:
             self.systemd.units[unit]["Job"] = (job_id, job_path)
         for cb in self._job_new_handlers:
