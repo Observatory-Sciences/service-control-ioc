@@ -680,6 +680,7 @@ def test_recommendation_branches() -> None:
     clean = _recommend({"vm": {"gate_violation": 2}}, ["G4"])
     assert "no scenario produced a possible" in clean
     assert "partly enforced" in clean
+    assert "narrower allow-lists" in clean
     assert "from G4" in clean
     seen = _recommend({"vm": {"gate_violation_possible": 1}}, [])
     assert "still appears on real stacks" in seen

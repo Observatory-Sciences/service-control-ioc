@@ -138,14 +138,35 @@ def render_gate(root: Path) -> str:
     return "\n".join(out) + "\n"
 
 
-def _allowing_possible() -> list[str]:
-    """The scenarios whose expectation lets ``gate_violation_possible`` appear."""
+def _allowing_possible() -> tuple[list[str], list[str]]:
+    """Scenarios whose allow-list lets ``gate_violation_possible`` appear.
+
+    The first list matches a ``gate_violation_possible`` finding of any name
+    (probed with the key ``gate_violation_possible:x``). The second holds
+    scenarios with a narrower pattern, such as ``*sink@1*``, that accepts
+    only some such findings.
+    """
     probe = "gate_violation_possible:x"
-    return [
-        sc.id
-        for sc in SCENARIOS
-        if any(fnmatch.fnmatchcase(probe, pat) for pat in sc.expect.allowed)
-    ]
+    units = (
+        "relay<scdemo-sink@1.service",
+        "relay<scdemo-sink@2.service",
+        "controller<scdemo-relay.service",
+        "controller<scdemo-sink@1.service",
+        "controller<scdemo-sink@2.service",
+    )
+    any_name: list[str] = []
+    some: list[str] = []
+    for sc in SCENARIOS:
+        allowed = sc.expect.allowed
+
+        def accepts(key: str, patterns: tuple[str, ...] = allowed) -> bool:
+            return any(fnmatch.fnmatchcase(key, pat) for pat in patterns)
+
+        if accepts(probe):
+            any_name.append(sc.id)
+        elif any(accepts(f"gate_violation_possible:{u}") for u in units):
+            some.append(sc.id)
+    return any_name, some
 
 
 def _recommend(tally: dict[str, dict[str, int]], definite_in: Sequence[str]) -> str:
@@ -155,7 +176,7 @@ def _recommend(tally: dict[str, dict[str, int]], definite_in: Sequence[str]) -> 
     """
     possible = sum(c.get("gate_violation_possible", 0) for c in tally.values())
     definite = sum(c.get("gate_violation", 0) for c in tally.values())
-    allowing = _allowing_possible()
+    allowing, partly = _allowing_possible()
     base = (
         f"Across {len(tally)} target(s) the evidence holds {definite} definite"
         f" gate_violation and {possible} gate_violation_possible findings. "
@@ -172,8 +193,10 @@ def _recommend(tally: dict[str, dict[str, int]], definite_in: Sequence[str]) -> 
         " dependency's active_enter precedes the dependent's start and its"
         " element is seen ready at the next poll) is now in the model, and with"
         " ~100 ms polls while units start, no scenario produced a possible"
-        " verdict. That zero is partly enforced by the scenarios, though: only"
-        f" {', '.join(allowing) or 'none'} allow it, and every other scenario fails"
+        " verdict. That zero is partly enforced by the scenarios, though:"
+        f" {', '.join(allowing) or 'none'} allow it under any name, and"
+        f" {', '.join(partly) or 'no other scenario'} have narrower allow-lists"
+        " that could accept some such findings; every remaining scenario fails"
         " if it appears, so the unconstrained evidence is thinner than the"
         " counts suggest. The recommendation is to add no further suppression"
         " and keep possible as the verdict for a start within one fast poll of"
