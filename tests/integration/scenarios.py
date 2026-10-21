@@ -114,6 +114,9 @@ class Expect:
     raised: tuple[str, ...] = ()  # finding keys that must be raised; "a|b" = either
     allowed: tuple[str, ...] = ()  # fnmatch patterns of other findings that may appear
     cleared: bool = False  # every raised finding has a CLEARED by the end
+    # fnmatch patterns of findings that may appear only as transients: each
+    # one raised must be CLEARED after its last raise (ruling 21).
+    transient: tuple[str, ...] = ()
     within: float = 120.0  # seconds to reach the final state
     min_time: float = 0.0  # final state must NOT be reached before this
     hold: float = 5.0  # final state must then hold this long
@@ -127,7 +130,7 @@ class Expect:
     state_seen: bool = False
     # The final state may be reached, break during its hold and be reached
     # again (a restart loop cycles through it). Without this, any broken hold
-    # fails the scenario even if a later hold succeeds. Only F5 opts in.
+    # fails the scenario even if a later hold succeeds. Only F5 and F4 opt in.
     holds_may_break: bool = False
 
 
@@ -216,8 +219,16 @@ SCENARIOS: Final[tuple[Scenario, ...]] = (
         "F4",
         "Controller connects dealer to the wrong port",
         faults={_CONTROLLER: ("SCDEMO_FAULT_WRONG_CONNECT=dealer",)},
+        # The controller's REQ socket can drop for ~0.1 s at start (ruling
+        # 21, as in C2): a cleared rep transient and the fault/starting/fault
+        # flap it causes are allowed; the router fault must then hold.
         expect=Expect(
-            "fault", 0, raised=("edge_missing:controller -> relay.router",), within=90
+            "fault",
+            0,
+            raised=("edge_missing:controller -> relay.router",),
+            transient=("edge_missing:controller -> relay.rep",),
+            within=90,
+            holds_may_break=True,
         ),
     ),
     Scenario(
@@ -826,26 +837,36 @@ def _check_findings(exp: Expect, events: Sequence[Event]) -> list[str]:
             continue
         if any(fnmatchcase(key, pattern) for pattern in exp.allowed):
             continue
+        if any(fnmatchcase(key, pattern) for pattern in exp.transient):
+            continue  # must clear, checked below
         failures.append(f"unexpected finding {key}: {texts[key]}")
-    if exp.cleared:
+    must_clear = [
+        key
+        for key in raised_keys([e for e in events if e.get("kind") == "finding"])
         # FAULT findings only: a GATE finding is an event about a start that
         # has happened (spec 5.4), cleared only when the dependent restarts.
-        for key in raised_keys([e for e in events if e.get("kind") == "finding"]):
-            last_raised = max(
-                i
-                for i, e in enumerate(events)
-                if e.get("kind") in FINDING_KINDS
-                and (f := finding_of(e)) is not None
-                and finding_key(f) == key
-            )
-            if not any(
-                i > last_raised
-                and e.get("kind") == "cleared"
-                and (f := finding_of(e)) is not None
-                and finding_key(f) == key
-                for i, e in enumerate(events)
-            ):
-                failures.append(f"finding {key} never cleared")
+        if exp.cleared
+        or (
+            key not in alternatives
+            and any(fnmatchcase(key, pattern) for pattern in exp.transient)
+        )
+    ]
+    for key in must_clear:
+        last_raised = max(
+            i
+            for i, e in enumerate(events)
+            if e.get("kind") in FINDING_KINDS
+            and (f := finding_of(e)) is not None
+            and finding_key(f) == key
+        )
+        if not any(
+            i > last_raised
+            and e.get("kind") == "cleared"
+            and (f := finding_of(e)) is not None
+            and finding_key(f) == key
+            for i, e in enumerate(events)
+        ):
+            failures.append(f"finding {key} never cleared")
     return failures
 
 

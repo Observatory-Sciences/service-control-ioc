@@ -370,6 +370,53 @@ def test_alternatives_and_patterns(tmp_path: Path) -> None:
     assert any("cpu_spin:sink@2" in f for f in result.failures)
 
 
+def test_transient_findings_must_clear(tmp_path: Path) -> None:
+    """Ruling 21: a ``transient`` finding may appear only if it is cleared after
+    its last raise; the required finding need not clear (F4's final fault)."""
+    rep, router = "controller -> relay.rep", "controller -> relay.router"
+    flap = [
+        stack(T0 + 1, "starting"),
+        fault(T0 + 4, "edge_missing", rep),
+        stack(T0 + 4, "fault"),
+        cleared(T0 + 4.1, "edge_missing", rep),
+        stack(T0 + 4.1, "starting"),
+        fault(T0 + 31, "edge_missing", router),
+        stack(T0 + 31, "fault"),
+    ]
+    pvs = {f"{P}:STATE": "fault", f"{P}:READY": "NOT READY"}
+    expect = Expect(
+        "fault",
+        0,
+        raised=(f"edge_missing:{router}",),
+        transient=(f"edge_missing:{rep}",),
+        holds_may_break=True,
+    )
+    sc = Scenario("T21", "transient", expect=expect)
+    result = run_scenario(FakeHost(flap, pvs, hold_ok=[False, True]), sc, tmp_path)
+    assert result.passed, result.failures
+
+    # Raised again and never cleared: a failure naming it.
+    stuck = [*flap, fault(T0 + 32, "edge_missing", rep)]
+    result = run_scenario(FakeHost(stuck, pvs), sc, tmp_path)
+    assert not result.passed
+    assert any(f"edge_missing:{rep} never cleared" in f for f in result.failures)
+
+    # A transient pattern does not let any other finding through.
+    other = [*flap, fault(T0 + 32, "edge_missing", "controller -> relay.pub")]
+    result = run_scenario(FakeHost(other, pvs), sc, tmp_path)
+    assert not result.passed
+    assert any(
+        "unexpected finding edge_missing:controller -> relay.pub" in f
+        for f in result.failures
+    )
+
+    # The required finding is still required.
+    no_router = flap[:5]
+    result = run_scenario(FakeHost(no_router, pvs), sc, tmp_path)
+    assert not result.passed
+    assert any(f"edge_missing:{router} was not raised" in f for f in result.failures)
+
+
 def test_cleared_and_extra_pvs(tmp_path: Path) -> None:
     events = [
         stack(T0 - 20, "ready"),
