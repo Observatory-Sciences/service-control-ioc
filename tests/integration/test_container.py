@@ -234,20 +234,25 @@ def test_controller_restart_no_faults_and_no_early_ready(container) -> None:
             assert not edges_down, texts(events)
 
 
-def test_relay_restart_no_faults(container) -> None:
-    """No fault remains: the controller's edges to relay may drop for ~0.1 s
-    while it reconnects (and the stack pass through fault), but each such
-    finding must be cleared, and nothing else may be raised (ruling 18)."""
-    events = restart_and_wait_ready(container, "scdemo-relay.service", 45)
+TRANSIENT_EDGES = "controller -> relay."
+
+
+def assert_relay_restart_clean(events: Sequence[Event]) -> None:
+    """Ruling 18: the controller's edges to relay may drop for ~0.1 s while it
+    reconnects, so their events (element, finding, cleared) and the stack's
+    passing ``fault`` are let through. Every such finding must be cleared,
+    nothing else may be raised or go to fault, and the stack ends ready."""
 
     def transient(e: Event) -> bool:
-        element = str(e.get("element"))
-        return code(e) == "edge_missing" and element.startswith("controller -> relay.")
+        return str(e.get("element")).startswith(TRANSIENT_EDGES)
 
     def stack_fault(e: Event) -> bool:
         return e.get("kind") == "stack" and e.get("new") == "fault"
 
-    # Drop only the stack's fault and the controller -> relay.* edge events.
+    allowed_codes = {"edge_missing", None}  # None: an element event without a finding
+    for e in events:
+        if transient(e):
+            assert code(e) in allowed_codes, texts([e])
     assert_no_faults([e for e in events if not transient(e) and not stack_fault(e)])
     for i, e in enumerate(events):
         if e.get("kind") == "finding" and transient(e):
@@ -256,6 +261,14 @@ def test_relay_restart_no_faults(container) -> None:
                 for later in events[i + 1 :]
             ), f"{e['element']} never cleared:\n{texts(events)}"
     assert overall(events)[-1] == "ready", texts(events)
+
+
+def test_relay_restart_no_faults(container) -> None:
+    """No fault remains after a relay restart (ruling 18, see
+    ``assert_relay_restart_clean``; its logic is tested on the Mac in
+    ``test_relay_restart_check.py``)."""
+    events = restart_and_wait_ready(container, "scdemo-relay.service", 45)
+    assert_relay_restart_clean(events)
 
 
 def test_whole_stack_restart_no_faults(container) -> None:
