@@ -21,7 +21,7 @@ from integration.scenarios import (
     run_scenario,
     scenario_session,
 )
-from integration.summarise import render, render_gate
+from integration.summarise import _recommend, render, render_gate
 
 P = "SCDEMO:SC"
 T0 = 1000.0  # target clock at the last action
@@ -627,3 +627,13 @@ def test_summarise_lists_gate_findings(tmp_path: Path) -> None:
     )
     assert "- container: 1 x gate_violation" in text
     assert "- vm: no gate findings" in text
+
+
+def test_recommendation_branches() -> None:
+    clean = _recommend({"vm": {"gate_violation": 2}}, ["G4"])
+    assert "no scenario produced a possible" in clean
+    assert "partly enforced" in clean
+    assert "from G4" in clean
+    seen = _recommend({"vm": {"gate_violation_possible": 1}}, [])
+    assert "still appears on real stacks" in seen
+    assert "partly enforced" not in seen

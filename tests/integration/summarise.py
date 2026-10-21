@@ -9,6 +9,7 @@ dependency, the dependent's start time) and ends with the tally per code.
 with one subdirectory per target (``container``, ``vm``).
 """
 
+import fnmatch
 import json
 import sys
 from collections.abc import Sequence
@@ -83,12 +84,13 @@ def render_gate(root: Path) -> str:
     order = {sc.id: i for i, sc in enumerate(SCENARIOS)}
     out = ["# Gate findings in the acceptance evidence", ""]
     tally: dict[str, dict[str, int]] = {}
+    definite_in: set[str] = set()
     for target, rows in targets.items():
         counts = tally.setdefault(target, {})
         out += [
             f"## {target}",
             "",
-            "| scenario | code | dependent | dependency | dependent started | not ready |",
+            "| scenario | code | dependent | dependency | dependent started (target local time) | not ready |",
             "|---|---|---|---|---|---|",
         ]
         found = False
@@ -100,6 +102,8 @@ def render_gate(root: Path) -> str:
                 found = True
                 code = str(entry.get("code"))
                 counts[code] = counts.get(code, 0) + 1
+                if code == "gate_violation":
+                    definite_in.add(sid)
                 cells = [
                     sid,
                     code,
@@ -112,7 +116,16 @@ def render_gate(root: Path) -> str:
         if not found:
             out.append("| (none) | | | | | |")
         out.append("")
-    out += ["## Tally", ""]
+    out += [
+        "## Tally",
+        "",
+        (
+            "There is no dependency-ready-time column: the finding's message"
+            " gives only the dependent's start time and the elements that were"
+            " not ready, and the model keeps the ready time internally."
+        ),
+        "",
+    ]
     for target, counts in tally.items():
         parts = ", ".join(f"{n} x {code}" for code, n in sorted(counts.items()))
         out.append(f"- {target}: {parts or 'no gate findings'}")
@@ -120,36 +133,52 @@ def render_gate(root: Path) -> str:
         "",
         "## Recommendation on the parked suppression rule",
         "",
-        _recommend(tally),
+        _recommend(tally, sorted(definite_in, key=lambda x: order.get(x, 99))),
     ]
     return "\n".join(out) + "\n"
 
 
-def _recommend(tally: dict[str, dict[str, int]]) -> str:
-    """One paragraph on suppressing ``gate_violation_possible``, from the counts."""
+def _allowing_possible() -> list[str]:
+    """The scenarios whose expectation lets ``gate_violation_possible`` appear."""
+    probe = "gate_violation_possible:x"
+    return [
+        sc.id
+        for sc in SCENARIOS
+        if any(fnmatch.fnmatchcase(probe, pat) for pat in sc.expect.allowed)
+    ]
+
+
+def _recommend(tally: dict[str, dict[str, int]], definite_in: Sequence[str]) -> str:
+    """One paragraph on suppressing ``gate_violation_possible``, from the data.
+
+    ``definite_in`` lists the scenarios that raised a definite violation.
+    """
     possible = sum(c.get("gate_violation_possible", 0) for c in tally.values())
     definite = sum(c.get("gate_violation", 0) for c in tally.values())
-    runs = len(tally)
+    allowing = _allowing_possible()
     base = (
-        f"Across {runs} target(s) the evidence holds {definite} definite"
+        f"Across {len(tally)} target(s) the evidence holds {definite} definite"
         f" gate_violation and {possible} gate_violation_possible findings. "
     )
-    if possible == 0:
+    if possible > 0:
         return base + (
-            "The suppression the parked ruling proposed (no finding when the"
-            " dependency's active_enter precedes the dependent's start and its"
-            " elements were ready at the check poll) is now in the model, and with"
-            " the ~100 ms polls while units start the possible verdict does not"
-            " arise in any scenario, gated or not. The recommendation is to add no"
-            " further suppression and keep possible as the honest verdict for a"
-            " start within one fast poll of an element appearing, which the unit"
-            " tests cover but the real stacks never produced. Every definite"
-            " finding comes from G4 and F10, where the gating is absent or covers"
-            " only the udp port, so they are genuine."
+            "gate_violation_possible still appears on real stacks, so the data"
+            " does not yet show that dropping it is safe; review the scenarios"
+            " above before changing the rule."
         )
+    where = ", ".join(definite_in) or "no scenario"
     return base + (
-        "gate_violation_possible still appears on real stacks, so the data does"
-        " not yet show the rule is safe to drop; review the scenarios above."
+        "The suppression the parked ruling proposed (no finding when the"
+        " dependency's active_enter precedes the dependent's start and its"
+        " element is seen ready at the next poll) is now in the model, and with"
+        " ~100 ms polls while units start, no scenario produced a possible"
+        " verdict. That zero is partly enforced by the scenarios, though: only"
+        f" {', '.join(allowing) or 'none'} allow it, and every other scenario fails"
+        " if it appears, so the unconstrained evidence is thinner than the"
+        " counts suggest. The recommendation is to add no further suppression"
+        " and keep possible as the verdict for a start within one fast poll of"
+        " an element appearing, which the unit tests cover. The definite"
+        f" findings come from {where}, which are scenarios that expect them."
     )
 
 
