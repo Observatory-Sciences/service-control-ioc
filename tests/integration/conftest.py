@@ -11,7 +11,7 @@ with ``ca_client.py`` on the target. Skipped unless a target is selected.
 import json
 import shlex
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass
 from typing import Any, Final
 
@@ -38,6 +38,8 @@ STACK_UNITS: Final = (
 )
 DROPIN_UNITS: Final = (
     "scdemo-sink@.service",
+    "scdemo-sink@1.service",
+    "scdemo-sink@2.service",
     "scdemo-relay.service",
     "scdemo-controller.service",
 )
@@ -127,18 +129,20 @@ class Host:
             f"systemctl reset-failed {TOOL_UNIT} 2>/dev/null || true"
         )
 
-    def tool_lines(self) -> list[str]:
-        """Every stdout line of the current ``qdsc-dev`` run."""
-        assert self.invocation, "start_tool() first"
+    def tool_lines(self, invocation: str | None = None) -> list[str]:
+        """Every stdout line of the current ``qdsc-dev`` run (or ``invocation``)."""
+        invocation = invocation or self.invocation
+        assert invocation, "start_tool() first"
         out = self.sh(
-            f"journalctl --no-pager -o cat _SYSTEMD_INVOCATION_ID={self.invocation}"
+            f"journalctl --no-pager -o cat _SYSTEMD_INVOCATION_ID={invocation}"
         )
         return out.splitlines()
 
-    def tool_events(self) -> list[Event]:
-        """The current run's JSON log lines that parse as objects."""
+    def tool_events(self, invocation: str | None = None) -> list[Event]:
+        """The current run's (or ``invocation``'s) JSON log lines that parse as
+        objects."""
         events: list[Event] = []
-        for line in self.tool_lines():
+        for line in self.tool_lines(invocation):
             try:
                 value = json.loads(line)
             except ValueError:
@@ -163,6 +167,22 @@ class Host:
                 text = "\n".join(str(e.get("text")) for e in events)
                 pytest.fail(f"no {what} within {timeout:g} s; events:\n{text}")
             time.sleep(0.5)
+
+    # -- facts about the target -------------------------------------------------
+
+    def unit_states(self, units: Sequence[str]) -> dict[str, str]:
+        """``ActiveState`` of each unit (``systemctl is-active``)."""
+        out = self.sh(f"systemctl is-active {shlex.join(units)} || true")
+        states = out.split()
+        assert len(states) == len(units), f"systemctl is-active gave {out!r}"
+        return dict(zip(units, states, strict=True))
+
+    def arch(self) -> str:
+        return self.sh("uname -m").strip()
+
+    def now(self) -> float:
+        """The target's ``time.time()``, the clock of the tool's event ``ts``."""
+        return float(self.sh("date +%s.%N").strip())
 
     # -- Channel Access (ca_client.py) ----------------------------------------
 

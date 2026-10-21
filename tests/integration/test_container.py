@@ -235,8 +235,24 @@ def test_controller_restart_no_faults_and_no_early_ready(container) -> None:
 
 
 def test_relay_restart_no_faults(container) -> None:
+    """No fault remains: the controller's edges to relay may drop for ~0.1 s
+    while it reconnects (and the stack pass through fault), but each such
+    finding must be cleared, and nothing else may be raised (ruling 18)."""
     events = restart_and_wait_ready(container, "scdemo-relay.service", 45)
-    assert_no_faults(events)
+
+    def transient(e: Event) -> bool:
+        element = str(e.get("element"))
+        return code(e) == "edge_missing" and element.startswith("controller -> relay.")
+
+    assert_no_faults(
+        [e for e in events if not transient(e) and e.get("new") != "fault"]
+    )
+    for i, e in enumerate(events):
+        if e.get("kind") == "finding" and transient(e):
+            assert any(
+                later.get("kind") == "cleared" and later.get("element") == e["element"]
+                for later in events[i + 1 :]
+            ), f"{e['element']} never cleared:\n{texts(events)}"
     assert overall(events)[-1] == "ready", texts(events)
 
 
