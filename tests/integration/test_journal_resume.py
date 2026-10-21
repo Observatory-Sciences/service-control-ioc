@@ -1,8 +1,8 @@
 """The journal follower resumes after its journalctl child dies, with no
 duplicate and no missing lines (``--after-cursor`` together with ``-n``).
 
-The ring behind ``RELAY:LOG`` (20 lines) heals a re-read, so it cannot show a
-resume bug alone. The test therefore also checks the mechanism: the new
+``RELAY:LOG`` (the newest whole lines of a 20-line ring that fit in 999 bytes,
+ruling 19) heals a re-read, so it cannot show a resume bug alone. The test therefore also checks the mechanism: the new
 child's argv carries ``-n`` and ``--after-cursor=C``, and running that argv
 (without ``-f``) returns exactly the entries after ``C``, no backlog.
 
@@ -28,6 +28,8 @@ STAMP = 9  # the tool prefixes each line with "HH:MM:SS "
 PGREP = "pgrep -u {user} -f '[j]ournalctl -f' || true"
 CURSOR = "--after-cursor="
 LATE_LINES = 5  # lines that may land between the two journal reads
+LOG_BYTES = 999  # ruling 19: what EDM's multiLineTextUpdate can show
+MIN_RING = 5  # a relay start logs ~20 lines of < 100 bytes: >= 5 must be shown
 
 
 def child_pids(container) -> set[int]:
@@ -55,8 +57,9 @@ def journal_messages(container) -> list[str]:
 
 def tool_ring(container) -> list[str]:
     """RELAY:LOG without the time prefix, one message per line."""
-    text = container.ca("get", LOG_PV)[LOG_PV]
-    return [line[STAMP:] for line in str(text).splitlines()]
+    text = str(container.ca("get", LOG_PV)[LOG_PV])
+    assert len(text.encode()) <= LOG_BYTES, f"RELAY:LOG has {len(text.encode())} bytes"
+    return [line[STAMP:] for line in text.splitlines()]
 
 
 def wait_ring_matches_journal(container, timeout: float = 30) -> list[str]:
@@ -65,7 +68,9 @@ def wait_ring_matches_journal(container, timeout: float = 30) -> list[str]:
     while True:
         truth = journal_messages(container)
         ring = tool_ring(container)
-        if ring and truth[-len(ring) :] == ring:
+        # A short ring would make the tail comparison weak (ruling 19 cut it
+        # from 20 lines to what fits in 999 bytes).
+        if len(ring) >= MIN_RING and truth[-len(ring) :] == ring:
             return ring
         if time.monotonic() > deadline:
             pytest.fail(

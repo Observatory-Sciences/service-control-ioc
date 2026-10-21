@@ -100,6 +100,13 @@ def test_text_waveform_newest_last_and_bounded() -> None:
     assert len(text.encode()) <= 5119
 
 
+def test_text_waveform_drops_whole_oldest_lines() -> None:
+    """No partial line at the start: only whole oldest lines are dropped."""
+    lines = [f"{i:02d}" + "x" * 97 for i in range(20)]  # 100 bytes with newline
+    text = text_waveform(lines, 1000).rstrip(b"\0").decode()
+    assert text.splitlines() == lines[-9:]
+
+
 def test_text_waveform_single_long_line_keeps_tail() -> None:
     data = text_waveform(["a" * 100 + "TAIL"], 20)
     assert len(data) == 20

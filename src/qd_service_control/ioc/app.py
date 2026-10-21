@@ -56,8 +56,12 @@ STRING_BYTES: Final = 39  # stringIn: 40 bytes with the NUL
 MSG_LENGTH: Final = 512  # FAULT_MSG, FINDING
 UNIT_LENGTH: Final = 128
 TEXT_LENGTH: Final = 256  # element DESC, DETAIL
-LOG_LENGTH: Final = 5120
-EVENTS_LENGTH: Final = 5120
+# LOG and EVENTS hold the newest whole lines that fit in 999 bytes plus a NUL
+# (ruling 19): EDM's multiLineTextUpdate reads at most 1000 bytes and prints
+# junk after them unless a NUL comes first (MAX_TEXT_LENGTH in edm diamondlib).
+EDM_TEXT_LENGTH: Final = 1000
+LOG_LENGTH: Final = EDM_TEXT_LENGTH
+EVENTS_LENGTH: Final = EDM_TEXT_LENGTH
 EVENTS_RING: Final = 20
 VERBS: Final[tuple[tuple[str, Verb], ...]] = (
     ("START", "start"),

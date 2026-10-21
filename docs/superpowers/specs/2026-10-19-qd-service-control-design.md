@@ -307,7 +307,11 @@ decoded. Raise the asyncio stream reader's line limit above the default 64
 KiB. `-n` gives a total backlog, not one per unit, so each unit's ring is
 filled at startup with a larger `-n` or a one-off read per unit (builder's
 choice). Each unit's entries go into a ring of the last 20 lines, published like `procServControl`'s `IOCOUT` (a `UCHAR` waveform,
-5120 elements, newest last). Restart the subprocess if it exits, logging it
+newest last), but capped at 999 bytes plus a NUL (1000 elements): the newest
+whole lines that fit, a single longer line cut to its last 999 bytes on a
+character boundary (plan 4 ruling 19). EDM's `multiLineTextUpdate` reads at
+most 1000 bytes and prints junk after them unless a NUL comes first, so a
+5120-byte buffer would hide the tail. Restart the subprocess if it exits, logging it
 and backing off. Limit the rate of PV updates so a unit logging heavily
 can't flood Channel Access. Reading the journal needs the tool's user to be
 in `systemd-journal` (a packaging proposal, Section 9).
@@ -350,11 +354,12 @@ indicative; the builder settles the names.
   `POST_READY` (bi: every required `post` element is ready, shown only and
   never part of `READY`),
   `FAULTS` (count), `FAULT_MSG` (latest finding, long string),
-  `EVENTS` (recent events, char waveform), `START`/`STOP`/`RESTART`
+  `EVENTS` (recent events, char waveform, newest last, capped like `LOG`
+  at 999 bytes plus a NUL, Section 6.5), `START`/`STOP`/`RESTART`
   (busy) for the stack's group.
 - Per service `<svc>:`: `STATE` (mbbi, Section 5.1), `UNIT` (unit name),
   `ACTIVE` (systemd `ActiveState`), `READY`, `NRESTARTS`, `EXIT`
-  (last exit status/signal), `CPU` (%), `LOG` (journal tail waveform),
+  (last exit status/signal), `CPU` (%), `LOG` (journal tail waveform, at most 999 bytes, Section 6.5),
   `FINDING`, `START`/`STOP`/`RESTART` (busy).
 - Per listener and per edge: `STATE`, `DESC` (the human-readable
   `client -> server:port/proto`), `SINCE` (time of last change).
@@ -375,6 +380,10 @@ so it keeps the spirit of D11. It generates:
   or in an edges section;
 - a per-service detail screen (the journal tail, exit status, findings),
   opened from the row.
+
+The journal tail and events panes (EDM `multiLineTextUpdate`) are tall
+enough for a whole 20-line ring, and every screen fits a 1600x1200 display
+(plan 4, Task 5; the texts themselves are capped at 999 bytes, Section 6.5).
 
 The builder chooses how the generator is driven (templates or code), and
 the layout. It must run on macOS and on EL9, without EDM installed, and its
@@ -559,7 +568,8 @@ These weren't discussed. They are my calls, and you can change any of them.
    dependent started; elements that never become ready are not gate violations
    (5.4, rulings 13 and 14 of plan 4). Violations are findings, not faults.
 5. One `journalctl -f` subprocess for all units, split by unit, 20 lines
-   and 5120 bytes per unit like `IOCOUT`, with rate-limited updates (6.5).
+   and 5120 bytes per unit like `IOCOUT`, published as the newest lines that
+   fit in 999 bytes for EDM (plan 4 ruling 19), with rate-limited updates (6.5).
 6. CPU from cgroup `cpu.stat`, not D-Bus `CPUUsageNSec` (6.6).
 7. A `generate-edm` subcommand rather than generating the screen at IOC
    startup (8.3).
