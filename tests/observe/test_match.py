@@ -226,6 +226,17 @@ def test_udp_connected_needs_udp_established() -> None:
     assert fact == EdgeFact(True, "connected", True)
 
 
+def test_udp_connected_needs_receiver_bound() -> None:
+    """Ruling 20 (spec 5.3): the OS keeps a connected UDP socket after the
+    receiver stops, so the edge is ready only while the receiver is bound too,
+    as for an unconnected sender."""
+    connected = owned(
+        RELAY, "udp", ("127.0.0.1", 41000), ("127.0.0.1", 20011), UDP_ESTABLISHED
+    )
+    fact = edge_fact(SPEC, "relay -> sink@1.udp", table(connected))
+    assert fact == EdgeFact(False, "connected", False)
+
+
 def test_udp_unconnected_needs_sender_socket() -> None:
     sink2 = "scdemo-sink@2.service"
     server = owned(sink2, "udp", ("127.0.0.1", 20012), ("0.0.0.0", 0), UDP_UNCONN)

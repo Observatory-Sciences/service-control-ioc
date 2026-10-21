@@ -97,8 +97,10 @@ def match_edge(
         )
         return EdgeFact(found, "established", server_present)
     if spec.sender == "connected":
+        # The OS keeps a connected UDP socket after the receiver stops, so the
+        # receiver must be bound too (spec 5.3, plan 4 ruling 20).
         ip = server.address
-        found = any(
+        found = server_present and any(
             e.sock.proto == "udp"
             and e.sock.state == UDP_ESTABLISHED
             and e.sock.remote_port == server.port

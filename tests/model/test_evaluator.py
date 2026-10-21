@@ -824,6 +824,19 @@ def test_edge_server_missing_names_server() -> None:
     assert finding.units == (UNITS["relay"],)
 
 
+def test_connected_udp_edge_with_receiver_gone_is_server_missing() -> None:
+    """Ruling 20: the relay's connected socket to sink@1.udp outlives the
+    receiver; the edge reports the missing server, like any other edge."""
+    ev = running(after={})
+    ev.update(scenario(T + 5, up=without("sink@1.udp")))  # the edge socket stays
+    edge = ev.view().elements["relay -> sink@1.udp"]
+    assert edge.state is fault
+    assert edge.detail == "server sink@1.udp missing"
+    assert edge.finding is not None
+    assert edge.finding.code is FindingCode.EDGE_SERVER_MISSING
+    assert edge.finding.units == (UNITS["sink@1"],)
+
+
 def test_host_client_edge_looks_at_server() -> None:
     ev = running(after={})
     ev.update(scenario(T + 5, up=without("relay.udp")))
