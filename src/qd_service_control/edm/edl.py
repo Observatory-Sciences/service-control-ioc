@@ -1,8 +1,10 @@
 """One function per EDM object, in the EDM 4-0-1 file format.
 
-Property order and fonts follow ``procServControl.edl``. Colours are ``rgb``
-values rather than ``colors.list`` indices, so a screen does not depend on the
-host's colour file.
+Property order and fonts follow ``procServControl.edl``. The LED colours are
+``rgb`` values rather than ``colors.list`` indices, so they do not depend on
+the order of the host's colour file. EDM still draws an ``rgb`` colour as the
+nearest entry of its palette, so each value is an entry of the standard EDM
+``colors.list`` (the index and name are given with it).
 """
 
 from collections.abc import Mapping, Sequence
@@ -10,10 +12,10 @@ from typing import Final
 
 Rgb = tuple[int, int, int]  # 16-bit EDM rgb, written "rgb r g b"
 
-_GREY: Final[Rgb] = (40960, 40960, 40960)
-_AMBER: Final[Rgb] = (65535, 43520, 0)
-_GREEN: Final[Rgb] = (0, 52224, 0)
-_RED: Final[Rgb] = (65535, 0, 0)
+_GREY: Final[Rgb] = (40606, 40606, 40606)  # static 6 "Title"
+_AMBER: Final[Rgb] = (65535, 52428, 0)  # static 38 "amber-38"
+_GREEN: Final[Rgb] = (0, 65535, 0)  # static 15 "Green LED: On"
+_RED: Final[Rgb] = (65535, 0, 0)  # static 20 "Red LED: On"
 
 # ELEMENT_STATES index: unknown, stopped, waiting, ready, fault
 STATE_COLOURS: Final[Mapping[int, Rgb]] = {

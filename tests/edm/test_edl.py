@@ -41,3 +41,21 @@ def test_screen_wraps_objects() -> None:
     assert "w 900\nh 100\n" in text
     assert 'title "T"' in text
     assert "activeExitButtonClass" in text
+
+
+# The VM's /opt/QD/epics/edm/colors.list (qd-epics-edm 1.12.105) entries the
+# LEDs use. EDM draws an "rgb" colour as the nearest palette entry, so a value
+# that is not one is drawn in another colour.
+PALETTE = {
+    (40606, 40606, 40606),  # static 6 "Title"
+    (65535, 52428, 0),  # static 38 "amber-38"
+    (0, 65535, 0),  # static 15 "Green LED: On"
+    (65535, 0, 0),  # static 20 "Red LED: On"
+}
+
+
+def test_led_colours_are_palette_entries() -> None:
+    """Regression (Task 5, seen live): rgb 0 52224 0 was drawn as the palette's
+    0 49344 0, so the ready LED was not the colour the screen asked for."""
+    used = {*edl.STATE_COLOURS.values(), *edl.OVERALL_COLOURS.values()}
+    assert used <= PALETTE, used - PALETTE

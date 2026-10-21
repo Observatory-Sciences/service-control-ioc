@@ -13,8 +13,13 @@ _MARGIN: Final = 10
 _LED: Final = 16
 # A multiLineTextUpdate pane that shows a whole 20-line ring (a unit's journal
 # tail, the events): courier 12 lines are 19 px apart, plus the margins.
+_LINE_H: Final = 19
+_PANE_MARGINS: Final = 20
 _PANE_LINES: Final = 20
-_PANE_HEIGHT: Final = _PANE_LINES * 19 + 20
+_PANE_HEIGHT: Final = _PANE_LINES * _LINE_H + _PANE_MARGINS
+# FAULT_MSG and FINDING wrap over three lines, so the journalctl reference at
+# the end of a finding stays visible.
+_FINDING_HEIGHT: Final = 3 * _LINE_H + _PANE_MARGINS
 # The events pane is a column right of the rows, so the top screen stays within
 # a 1600x1200 display (below the rows it would be 1270 px tall).
 _EVENTS_W: Final = 680
@@ -26,6 +31,12 @@ _CONTROLS: Final = (
     ("RESTART", "Restart", 70),
 )
 _UNSAFE: Final = re.compile(r"[^a-z0-9_-]+")
+# A service row on the top screen: ACTIVE has room for "activating/start-post".
+_ACTIVE_X: Final = 260
+_ACTIVE_W: Final = 160
+_NRESTARTS_X: Final = _ACTIVE_X + _ACTIVE_W + 5
+_CPU_X: Final = _NRESTARTS_X + 45
+_ROW_CONTROLS_X: Final = _CPU_X + 75
 
 
 def default_name(prefix: str) -> str:
@@ -86,19 +97,25 @@ def _top(spec: StackSpec, names: PvNames, name: str) -> str:
     objects.append(edl.text(_MARGIN, y, 50, _TEXT_H, "Faults"))
     objects.append(edl.update(65, y, 40, _TEXT_H, names.pv("", "FAULTS")))
     objects.append(
-        edl.update(115, y, WIDTH - 115 - _MARGIN, _TEXT_H, names.pv("", "FAULT_MSG"))
+        edl.multiline(
+            115, y, WIDTH - 115 - _MARGIN, _FINDING_HEIGHT, names.pv("", "FAULT_MSG")
+        )
     )
-    y += ROW + 8
+    y += _FINDING_HEIGHT + 8
     objects.append(edl.text(_MARGIN, y, 200, _TEXT_H, "Services", bold=True))
     y += ROW
     for sid, service in spec.services.items():
         base = names.services[sid]
         objects.append(edl.text(_MARGIN, y, 130, _TEXT_H, sid, bold=True))
         objects += _led_state(names, base, 145, y)
-        objects.append(edl.update(260, y, 80, _TEXT_H, names.pv(base, "ACTIVE")))
-        objects.append(edl.update(345, y, 40, _TEXT_H, names.pv(base, "NRESTARTS")))
-        objects.append(edl.update(390, y, 70, _TEXT_H, names.pv(base, "CPU")))
-        objects += _controls(names, base, 465, y)
+        objects.append(
+            edl.update(_ACTIVE_X, y, _ACTIVE_W, _TEXT_H, names.pv(base, "ACTIVE"))
+        )
+        objects.append(
+            edl.update(_NRESTARTS_X, y, 40, _TEXT_H, names.pv(base, "NRESTARTS"))
+        )
+        objects.append(edl.update(_CPU_X, y, 70, _TEXT_H, names.pv(base, "CPU")))
+        objects += _controls(names, base, _ROW_CONTROLS_X, y)
         objects.append(
             edl.related(
                 _controls_end(),
@@ -145,7 +162,7 @@ def _top(spec: StackSpec, names: PvNames, name: str) -> str:
 
 
 def _controls_end() -> int:
-    return 465 + sum(width + 5 for _, _, width in _CONTROLS)
+    return _ROW_CONTROLS_X + sum(width + 5 for _, _, width in _CONTROLS)
 
 
 def _detail(spec: StackSpec, names: PvNames, sid: str) -> str:
@@ -166,8 +183,13 @@ def _detail(spec: StackSpec, names: PvNames, sid: str) -> str:
     ):
         width = WIDTH - 140 - _MARGIN if field in wide else 200
         objects.append(edl.text(_MARGIN, y, 120, _TEXT_H, field.capitalize()))
-        objects.append(edl.update(140, y, width, _TEXT_H, names.pv(base, field)))
-        y += ROW
+        pv = names.pv(base, field)
+        if field == "FINDING":
+            objects.append(edl.multiline(140, y, width, _FINDING_HEIGHT, pv))
+            y += _FINDING_HEIGHT + 4
+        else:
+            objects.append(edl.update(140, y, width, _TEXT_H, pv))
+            y += ROW
     y += 4
     objects += _controls(names, base, _MARGIN, y)
     y += ROW + 8

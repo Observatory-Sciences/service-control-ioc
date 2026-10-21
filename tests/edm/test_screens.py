@@ -177,3 +177,28 @@ def test_generate_edm_reports_collision_without_traceback(
         cli.main(["generate-edm", str(config), str(tmp_path / "out")])
     assert e.value.code == 2
     assert "same screen file" in capsys.readouterr().err
+
+
+def test_top_active_fits_activating(spec: StackSpec, files: dict[str, str]) -> None:
+    """Regression (Task 5, seen live): 80 px showed "activating/start-post"
+    as "activating/sta". 21 characters of arial 12 need about 150 px."""
+    names = pv_names(spec)
+    for base in names.services.values():
+        active = _geometry(files["scdemo.edl"], names.pv(base, "ACTIVE"))
+        assert active["w"] >= 150, base
+
+
+def _multiline_lines(text: str, pv: str) -> int:
+    obj = next(o for o in text.split("object ") if f'controlPv "{pv}"' in o)
+    assert obj.startswith("multiLineTextUpdateClass"), pv
+    return (_geometry(text, pv)["h"] - PANE_MARGINS) // LINE_H
+
+
+def test_findings_wrap_over_three_lines(spec: StackSpec, files: dict[str, str]) -> None:
+    """Regression (Task 5, seen live): one-line FINDING and FAULT_MSG updates
+    cut off the journalctl reference at the end of the text."""
+    names = pv_names(spec)
+    assert _multiline_lines(files["scdemo.edl"], names.pv("", "FAULT_MSG")) >= 3
+    for base in names.services.values():
+        detail = files[f"scdemo-{base.lower()}.edl"]
+        assert _multiline_lines(detail, names.pv(base, "FINDING")) >= 3, base
