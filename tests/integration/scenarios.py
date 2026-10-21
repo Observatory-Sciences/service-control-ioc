@@ -125,6 +125,10 @@ class Expect:
     # some point after the last action, with the ``raised`` findings; READY,
     # the hold and the final PV values are not asserted.
     state_seen: bool = False
+    # The final state may be reached, break during its hold and be reached
+    # again (a restart loop cycles through it). Without this, any broken hold
+    # fails the scenario even if a later hold succeeds. Only F5 opts in.
+    holds_may_break: bool = False
 
 
 @dataclass(frozen=True)
@@ -221,7 +225,12 @@ SCENARIOS: Final[tuple[Scenario, ...]] = (
         "Relay crashes after 5 s: restart loop",
         faults={_RELAY: ("SCDEMO_FAULT_CRASH_AFTER=5",)},
         expect=Expect(
-            "fault", 0, raised=("unit_restart_loop:relay",), allowed=("*",), within=150
+            "fault",
+            0,
+            raised=("unit_restart_loop:relay",),
+            allowed=("*",),
+            within=150,
+            holds_may_break=True,  # the relay cycles through fault until the loop
         ),
     ),
     Scenario(
@@ -770,6 +779,14 @@ def check(
             f"the final state did not hold for {_num(exp.hold)} s:"
             f" {broken.get('pv')} read {broken.get('value')!r}"
         )
+    if not exp.holds_may_break:
+        for hold in final.broken_holds:
+            broken = hold.get("broken") or {}
+            failures.append(
+                f"the final state {exp.state!r} was reached but did not hold:"
+                f" {broken.get('pv')} read {broken.get('value')!r}"
+                " (opt in with holds_may_break)"
+            )
 
     wanted: dict[str, str] = {}
     if not exp.state_seen:

@@ -244,9 +244,11 @@ def test_relay_restart_no_faults(container) -> None:
         element = str(e.get("element"))
         return code(e) == "edge_missing" and element.startswith("controller -> relay.")
 
-    assert_no_faults(
-        [e for e in events if not transient(e) and e.get("new") != "fault"]
-    )
+    def stack_fault(e: Event) -> bool:
+        return e.get("kind") == "stack" and e.get("new") == "fault"
+
+    # Drop only the stack's fault and the controller -> relay.* edge events.
+    assert_no_faults([e for e in events if not transient(e) and not stack_fault(e)])
     for i, e in enumerate(events):
         if e.get("kind") == "finding" and transient(e):
             assert any(

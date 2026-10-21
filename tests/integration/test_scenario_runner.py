@@ -250,7 +250,10 @@ def test_transient_final_state_is_waited_for_again(tmp_path: Path) -> None:
         stack(T0 + 40, "fault"),
     ]
     pvs = {f"{P}:STATE": "fault", f"{P}:READY": "NOT READY"}
-    sc = Scenario("T9", "retry", expect=Expect("fault", 0, within=150))
+    # Only a scenario that opts in (F5, the restart loop) may break a hold.
+    sc = Scenario(
+        "T9", "retry", expect=Expect("fault", 0, within=150, holds_may_break=True)
+    )
     host = FakeHost(events, pvs, hold_ok=[False, True])
     result = run_scenario(host, sc, tmp_path)
     assert result.passed, result.failures
@@ -260,6 +263,25 @@ def test_transient_final_state_is_waited_for_again(tmp_path: Path) -> None:
     assert data["broken_holds"] == [
         {"ok": False, "broken": {"pv": f"{P}:STATE", "value": "starting"}}
     ]
+
+
+def test_broken_hold_fails_by_default(tmp_path: Path) -> None:
+    # Reached ready, broke (fault) during the hold, reached ready again and held.
+    events = [
+        stack(T0 + 2, "ready"),
+        stack(T0 + 4, "fault"),
+        stack(T0 + 9, "ready"),
+    ]
+    host = FakeHost(events, hold_ok=[False, True])
+    result = run_scenario(host, ready_scenario(), tmp_path)
+    assert not result.passed
+    broke = (
+        "the final state 'ready' was reached but did not hold:"
+        " SCDEMO:SC:STATE read 'starting' (opt in with holds_may_break)"
+    )
+    assert result.failures == (broke,)
+    # The retry still ran: the final state was waited for twice.
+    assert sum(c.startswith(f"ca wait {P}:STATE ready") for c in host.calls) == 2
 
 
 def test_state_seen_needs_no_hold(tmp_path: Path) -> None:
