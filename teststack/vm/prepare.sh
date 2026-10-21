@@ -2,7 +2,8 @@
 # Prepare the QD test VM (test-vm, Rocky 9) for the integration
 # suite. Run as root. Idempotent. Installs only what docs/acceptance/evidence/
 # vm-probe.txt found missing: xwd (EPEL), netpbm-progs, xorg-x11-fonts-misc, rsync
-# (found missing on first live run: VmTarget.prepare() syncs the repo with it) and
+# (found missing on first live run: VmTarget.prepare() syncs the repo with it), lsof
+# (found missing on the final unit-suite run: teststack's relay test uses it) and
 # uv (pinned, for root at /usr/local/bin/uv and for the login user). It does not
 # touch epel-release, the qd-* units or any account.
 # Usage: prepare.sh [login-user]   (default: vmuser, the account that owns the repo)
@@ -19,7 +20,7 @@ rpm -q epel-release >/dev/null || { echo "prepare.sh: epel-release is missing (e
 getent passwd "$LOGIN_USER" >/dev/null || { echo "prepare.sh: user $LOGIN_USER does not exist" >&2; exit 1; }
 
 missing=()
-for pkg in rsync xwd netpbm-progs xorg-x11-fonts-misc; do
+for pkg in rsync lsof xwd netpbm-progs xorg-x11-fonts-misc; do
     rpm -q "$pkg" >/dev/null || missing+=("$pkg")
 done
 if [ "${#missing[@]}" -gt 0 ]; then
