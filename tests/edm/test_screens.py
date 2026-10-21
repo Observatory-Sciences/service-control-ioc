@@ -12,6 +12,12 @@ from qd_service_control.pvnames import pv_names
 
 REPO = Path(__file__).resolve().parents[2]
 SCDEMO = REPO / "teststack/config/scdemo.yaml"
+# Every screen fits a 1600x1200 display (the VM's Xvfb screen), so nothing
+# needs scrolling and screenshots show the whole screen.
+SCREEN_W, SCREEN_H = 1600, 1200
+# courier-medium-r-12.0 lines are 19 px apart in EDM's multiLineTextUpdate; a
+# pane shows a full 20-line ring (journal and events) with its margins.
+PANE_LINES, LINE_H, PANE_MARGINS = 20, 19, 20
 PV_LINE = re.compile(r'^(?:controlPv|visPv|alarmPv) "([^"]*)"$', re.MULTILINE)
 
 
@@ -82,7 +88,8 @@ def test_objects_balanced_and_in_bounds(files: dict[str, str]) -> None:
         assert text.count("beginObjectProperties") == text.count("endObjectProperties")
         sw = int(re.search(r"^w (\d+)$", text, re.MULTILINE).group(1))  # ty: ignore[unresolved-attribute] - screen header always present
         sh = int(re.search(r"^h (\d+)$", text, re.MULTILINE).group(1))  # ty: ignore[unresolved-attribute] - screen header always present
-        assert sw == 900
+        assert sw <= SCREEN_W, name
+        assert sh <= SCREEN_H, name
         for obj in text.split("beginObjectProperties")[1:]:
             vals = {
                 k: int(re.search(rf"^{k} (\d+)$", obj, re.MULTILINE).group(1))  # ty: ignore[unresolved-attribute] - every object has geometry
@@ -108,14 +115,42 @@ def test_generate_edm_cli_writes_files(
     assert (out / "scdemo-sc.edl").is_file()
 
 
-def test_detail_log_is_880_by_320(spec: StackSpec, files: dict[str, str]) -> None:
+def _geometry(text: str, pv: str) -> dict[str, int]:
+    """x, y, w and h of the object whose ``controlPv`` is ``pv``."""
+    obj = next(o for o in text.split("object ") if f'controlPv "{pv}"' in o)
+    return {
+        k: int(re.search(rf"^{k} (\d+)$", obj, re.MULTILINE).group(1))  # ty: ignore[unresolved-attribute] - every object has geometry
+        for k in "xywh"
+    }
+
+
+def test_detail_log_shows_the_whole_ring(
+    spec: StackSpec, files: dict[str, str]
+) -> None:
+    """Regression (Task 5, seen live): the 320 px LOG pane showed 16 lines, so
+    the newest lines of a 20-line journal ring were hidden."""
     names = pv_names(spec)
     for base in names.services.values():
-        text = files[f"scdemo-{base.lower()}.edl"]
-        log = f'controlPv "{names.pv(base, "LOG")}"'
-        obj = next(o for o in text.split("object ") if log in o)
-        assert re.search(r"^w 880$", obj, re.MULTILINE), base
-        assert re.search(r"^h 320$", obj, re.MULTILINE), base
+        log = _geometry(files[f"scdemo-{base.lower()}.edl"], names.pv(base, "LOG"))
+        assert log["w"] == 880, base
+        assert log["h"] >= PANE_LINES * LINE_H + PANE_MARGINS, base
+
+
+def test_top_events_show_the_whole_ring(spec: StackSpec, files: dict[str, str]) -> None:
+    """Regression (Task 5, seen live): the 300 px EVENTS pane showed 15 of the
+    20 ring lines, hiding the newest events."""
+    events = _geometry(files["scdemo.edl"], pv_names(spec).pv("", "EVENTS"))
+    assert events["h"] >= PANE_LINES * LINE_H + PANE_MARGINS
+
+
+@pytest.mark.parametrize("field", ["READY", "POST_READY"])
+def test_top_ready_fields_fit_not_ready(
+    spec: StackSpec, files: dict[str, str], field: str
+) -> None:
+    """Regression (Task 5, seen live): 40 px showed "READY" as "READ". The bi
+    states are "READY" and "NOT READY": 9 characters of arial 12 (< 9 px each)."""
+    update = _geometry(files["scdemo.edl"], pv_names(spec).pv("", field))
+    assert update["w"] >= 9 * 9
 
 
 _COLLIDING = """

@@ -11,8 +11,14 @@ WIDTH: Final = 900
 ROW: Final = 24
 _MARGIN: Final = 10
 _LED: Final = 16
-_LOG_HEIGHT: Final = 320
-_EVENT_HEIGHT: Final = 300
+# A multiLineTextUpdate pane that shows a whole 20-line ring (a unit's journal
+# tail, the events): courier 12 lines are 19 px apart, plus the margins.
+_PANE_LINES: Final = 20
+_PANE_HEIGHT: Final = _PANE_LINES * 19 + 20
+# The events pane is a column right of the rows, so the top screen stays within
+# a 1600x1200 display (below the rows it would be 1270 px tall).
+_EVENTS_W: Final = 680
+TOP_WIDTH: Final = WIDTH + _EVENTS_W + _MARGIN
 _TEXT_H: Final = 20
 _CONTROLS: Final = (
     ("START", "Start", 60),
@@ -63,15 +69,17 @@ def _service_elements(service: ServiceSpec) -> tuple[str, ...]:
 def _top(spec: StackSpec, names: PvNames, name: str) -> str:
     objects: list[str] = []
     y = _MARGIN
-    objects.append(edl.text(_MARGIN, y, 200, _TEXT_H, spec.prefix, bold=True))
+    objects.append(edl.text(_MARGIN, y, 130, _TEXT_H, spec.prefix, bold=True))
+    # The overall LED and STATE line up with the service rows' below. READY
+    # and POST_READY are bi records: room for "NOT READY".
     objects.append(
-        edl.led(230, y + 2, _LED, _LED, names.pv("", "STATE"), edl.OVERALL_COLOURS)
+        edl.led(145, y + 2, _LED, _LED, names.pv("", "STATE"), edl.OVERALL_COLOURS)
     )
-    objects.append(edl.update(250, y, 100, _TEXT_H, names.pv("", "STATE")))
-    objects.append(edl.text(360, y, 50, _TEXT_H, "Ready"))
-    objects.append(edl.update(415, y, 40, _TEXT_H, names.pv("", "READY")))
-    objects.append(edl.text(465, y, 90, _TEXT_H, "Post ready"))
-    objects.append(edl.update(560, y, 40, _TEXT_H, names.pv("", "POST_READY")))
+    objects.append(edl.update(165, y, 90, _TEXT_H, names.pv("", "STATE")))
+    objects.append(edl.text(265, y, 45, _TEXT_H, "Ready"))
+    objects.append(edl.update(315, y, 90, _TEXT_H, names.pv("", "READY")))
+    objects.append(edl.text(415, y, 80, _TEXT_H, "Post ready"))
+    objects.append(edl.update(500, y, 90, _TEXT_H, names.pv("", "POST_READY")))
     if names.stack_controls:
         objects += _controls(names, "", 650, y)
     y += ROW + 4
@@ -127,17 +135,13 @@ def _top(spec: StackSpec, names: PvNames, name: str) -> str:
             objects += _led_state(names, base, 145, y)
             objects += _controls(names, base, 260, y)
             y += ROW
-    y += 8
-    objects.append(edl.text(_MARGIN, y, 200, _TEXT_H, "Events", bold=True))
-    y += ROW
-    objects.append(
-        edl.multiline(
-            _MARGIN, y, WIDTH - 2 * _MARGIN, _EVENT_HEIGHT, names.pv("", "EVENTS")
-        )
-    )
-    y += _EVENT_HEIGHT + 8
-    objects.append(edl.exit_button(WIDTH - _MARGIN - 60, y))
-    return edl.screen(WIDTH, y + ROW + _MARGIN, f"{spec.prefix} stack", objects)
+    objects.append(edl.text(WIDTH, _MARGIN, 200, _TEXT_H, "Events", bold=True))
+    top = _MARGIN + ROW
+    height = max(_PANE_HEIGHT, y - top)
+    objects.append(edl.multiline(WIDTH, top, _EVENTS_W, height, names.pv("", "EVENTS")))
+    y = top + height + 8
+    objects.append(edl.exit_button(TOP_WIDTH - _MARGIN - 60, y))
+    return edl.screen(TOP_WIDTH, y + ROW + _MARGIN, f"{spec.prefix} stack", objects)
 
 
 def _controls_end() -> int:
@@ -173,10 +177,10 @@ def _detail(spec: StackSpec, names: PvNames, sid: str) -> str:
     y += 8
     objects.append(
         edl.multiline(
-            _MARGIN, y, WIDTH - 2 * _MARGIN, _LOG_HEIGHT, names.pv(base, "LOG")
+            _MARGIN, y, WIDTH - 2 * _MARGIN, _PANE_HEIGHT, names.pv(base, "LOG")
         )
     )
-    y += _LOG_HEIGHT + 8
+    y += _PANE_HEIGHT + 8
     objects.append(edl.exit_button(WIDTH - _MARGIN - 60, y))
     return edl.screen(WIDTH, y + ROW + _MARGIN, f"{sid} - {spec.prefix}", objects)
 
