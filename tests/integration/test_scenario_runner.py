@@ -21,7 +21,7 @@ from integration.scenarios import (
     run_scenario,
     scenario_session,
 )
-from integration.summarise import render
+from integration.summarise import render, render_gate
 
 P = "SCDEMO:SC"
 T0 = 1000.0  # target clock at the last action
@@ -603,3 +603,27 @@ def test_summarise_renders_tables(tmp_path: Path) -> None:
     assert lines.index("| G1 | title G1 | pass (5.2 s) | pass (61.0 s) |") < (
         lines.index("| F1 | title F1 | pass (5.2 s) | FAIL (61.0 s) |")
     )
+
+
+def test_summarise_lists_gate_findings(tmp_path: Path) -> None:
+    entry = {
+        "text": "GATE gate_violation: a.service started at 12:00:01.250 before b was"
+        " ready (b.one, b.two), look at a.service, b.service (journalctl)",
+        "code": "gate_violation",
+        "dependent": "a.service",
+        "dependency": "b.service",
+        "dependent_start": "12:00:01.250",
+        "dependency_start": None,
+    }
+    for target, gate in (("container", [entry]), ("vm", [])):
+        folder = tmp_path / target
+        folder.mkdir()
+        data = {"scenario": "G4", "title": "t", "passed": True, "gate": gate}
+        (folder / "G4.json").write_text(json.dumps(data))
+    text = render_gate(tmp_path)
+    assert (
+        "| G4 | gate_violation | a.service | b.service | 12:00:01.250 | b.one, b.two |"
+        in text
+    )
+    assert "- container: 1 x gate_violation" in text
+    assert "- vm: no gate findings" in text
