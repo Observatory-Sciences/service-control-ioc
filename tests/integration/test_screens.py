@@ -18,6 +18,7 @@ Run with ``QDSC_TARGET=vm uv run pytest -m screens
 tests/integration/test_screens.py -v``.
 """
 
+import hashlib
 import json
 import os
 import re
@@ -178,6 +179,7 @@ class Shot:
     ppm: Path
     remote_ppm: str
     pvs: dict[str, Any]
+    sha256: str  # of the PNG fetched in this run
 
 
 @dataclass
@@ -187,6 +189,7 @@ class Captures:
     control: dict[str, Any] = field(default_factory=dict)
     failures: list[str] = field(default_factory=list)
     screen: "Screen | None" = None
+    started: float = field(default_factory=time.time)  # Mac clock, fixture start
 
 
 class Screen:
@@ -226,7 +229,8 @@ class Screen:
         local_png, local_ppm = IMAGES / f"{name}.png", self.local / f"{name}.ppm"
         self.host.target.fetch(png, local_png)
         self.host.target.fetch(ppm, local_ppm)
-        shot = Shot(name, self.file, local_png, local_ppm, ppm, pvs)
+        digest = hashlib.sha256(local_png.read_bytes()).hexdigest()
+        shot = Shot(name, self.file, local_png, local_ppm, ppm, pvs, digest)
         self.caps.shots[name] = shot
         return shot
 
@@ -270,6 +274,7 @@ def capture_ready(host: Host, screen: Screen, caps: Captures) -> None:
         shot = screen.shot("edm-top-ready")
         expect_pv(caps, shot, "STATE", "ready")
         screen.show(RELAY)
+        wait(host, caps, "RELAY:STATE", "ready", 10)
         shot = screen.shot("edm-relay-ready", "RELAY:LOG")
         expect_pv(caps, shot, "STATE", "ready")
         screen.show(TOP)
@@ -313,6 +318,7 @@ def capture_nobind(host: Host, screen: Screen, caps: Captures) -> None:
         expect_pv(caps, shot, "STATE", "fault")
         expect_pv(caps, shot, "SINK1:STATS:STATE", "fault")
         screen.show(SINK1)
+        wait(host, caps, "SINK1:STATS:STATE", "fault", 10)
         shot = screen.shot("edm-sink1-fault-nobind", "SINK1:FINDING")
         if not shot.pvs.get(f"{P}:SINK1:FINDING"):
             caps.failures.append("edm-sink1-fault-nobind: SINK1:FINDING is empty")
@@ -325,6 +331,7 @@ def capture_spin(host: Host, screen: Screen, caps: Captures) -> None:
         final = session.wait_final()
         if not final.hold.get("ok"):
             caps.failures.append(f"F9 final state did not hold: {final.hold}")
+        wait(host, caps, "SINK2:STATE", "fault", 10)
         shot = screen.shot("edm-sink2-spin", "SINK2:STATE", "SINK2:CPU")
         expect_pv(caps, shot, "STATE", "fault")
         expect_pv(caps, shot, "SINK2:STATE", "fault")
@@ -403,7 +410,8 @@ def caps(
             screen.edl(file)
         yield captures
     finally:
-        screen.run("stop")
+        screen.run("stop")  # also removes /run/edmshot*
+        host.sh(f"rm -rf {REMOTE}")
         write_evidence(captures)
 
 
@@ -468,6 +476,10 @@ def test_no_white_disconnected_widgets(caps: Captures) -> None:
 
 
 def test_log_waveform_shows_text(caps: Captures) -> None:
+    """The relay detail's LOG pane has text-coloured pixels and RELAY:LOG is
+    not empty. It does not prove that the pixels spell RELAY:LOG's lines, nor
+    that the newest line is the one drawn last (no OCR): that is checked by eye
+    and by the IOC tests of the 999-byte cap (ruling 19)."""
     shot = caps.shots["edm-relay-ready"]
     (log,) = [
         o
@@ -509,7 +521,12 @@ def test_control_from_screen(caps: Captures, action: str) -> None:
 
 
 def test_screenshots_written(caps: Captures) -> None:
+    """Every row's PNG was captured and fetched in this run: not a stale file
+    left in docs/acceptance/images by an earlier run."""
     for name in TABLE:
+        assert name in caps.shots, f"{name} was not captured in this run"
         png = IMAGES / f"{name}.png"
-        assert png.is_file(), png
-        assert png.read_bytes()[:8] == b"\x89PNG\r\n\x1a\n", png
+        data = png.read_bytes()
+        assert data[:8] == b"\x89PNG\r\n\x1a\n", png
+        assert hashlib.sha256(data).hexdigest() == caps.shots[name].sha256, png
+        assert png.stat().st_mtime >= caps.started, f"{png} predates this run"

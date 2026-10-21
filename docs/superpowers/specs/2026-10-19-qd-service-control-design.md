@@ -382,8 +382,10 @@ so it keeps the spirit of D11. It generates:
   opened from the row.
 
 The journal tail and events panes (EDM `multiLineTextUpdate`) are tall
-enough for a whole 20-line ring, and every screen fits a 1600x1200 display
-(plan 4, Task 5; the texts themselves are capped at 999 bytes, Section 6.5).
+enough for a whole 20-line ring (plan 4, Task 5; the texts themselves are
+capped at 999 bytes, Section 6.5). The scdemo test stack's screens fit a
+1600x1200 display; the generator does not bound the size, so a stack with
+more services or elements gets taller screens.
 
 The builder chooses how the generator is driven (templates or code), and
 the layout. It must run on macOS and on EL9, without EDM installed, and its

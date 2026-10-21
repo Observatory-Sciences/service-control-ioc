@@ -388,7 +388,7 @@ def stop() -> dict[str, object]:
     xvfb = _read_pids(XVFB_PID)
     _kill(edm)
     _kill(xvfb)
-    for path in (EDM_PIDS, XVFB_PID):
+    for path in (EDM_PIDS, XVFB_PID, EDM_LOG):
         path.unlink(missing_ok=True)
     return {"stopped": {"edm": edm, "xvfb": xvfb}}
 
