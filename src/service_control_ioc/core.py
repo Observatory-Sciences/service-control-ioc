@@ -26,21 +26,21 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
 
-from qd_service_control.config.spec import StackSpec
-from qd_service_control.model.deps import DependencyGraph
-from qd_service_control.model.evaluator import Evaluator, Inputs
-from qd_service_control.model.types import (
+from service_control_ioc.config.spec import StackSpec
+from service_control_ioc.model.deps import DependencyGraph
+from service_control_ioc.model.evaluator import Evaluator, Inputs
+from service_control_ioc.model.types import (
     Event,
     JobOutcome,
     StackView,
     UnitSnapshot,
     Verb,
 )
-from qd_service_control.observe.cpu import CpuMeter
-from qd_service_control.observe.files import probe_file
-from qd_service_control.observe.journal import JournalLine, JournalTail
-from qd_service_control.observe.procfs import SocketTable, read_cpu_usec, scan_sockets
-from qd_service_control.observe.systemd import (
+from service_control_ioc.observe.cpu import CpuMeter
+from service_control_ioc.observe.files import probe_file
+from service_control_ioc.observe.journal import JournalLine, JournalTail
+from service_control_ioc.observe.procfs import SocketTable, read_cpu_usec, scan_sockets
+from service_control_ioc.observe.systemd import (
     DEFAULT_BACKOFF,
     SystemdBus,
     SystemdJobError,

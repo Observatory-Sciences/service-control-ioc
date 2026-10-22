@@ -7,8 +7,8 @@ from collections.abc import Iterator
 
 import pytest
 
-from qd_service_control.logs import log_event, setup_logging
-from qd_service_control.model.types import Event, Finding, FindingCode
+from service_control_ioc.logs import log_event, setup_logging
+from service_control_ioc.model.types import Event, Finding, FindingCode
 
 T = 1_700_000_000.25
 STAMP = r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}"
@@ -114,13 +114,13 @@ def test_json_format_keeps_other_log_lines_parseable(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     setup_logging("json", "INFO")
-    logging.getLogger("qd_service_control.test").warning("bus %s", "lost")
-    logging.getLogger("qd_service_control.test").debug("hidden")
+    logging.getLogger("service_control_ioc.test").warning("bus %s", "lost")
+    logging.getLogger("service_control_ioc.test").debug("hidden")
     (line,) = capsys.readouterr().out.splitlines()
     record = json.loads(line)
     assert record["kind"] == "log"
     assert record["level"] == "WARNING"
-    assert record["logger"] == "qd_service_control.test"
+    assert record["logger"] == "service_control_ioc.test"
     assert record["text"] == "bus lost"
     assert isinstance(record["ts"], float)
 
@@ -136,7 +136,7 @@ def test_setup_logging_replaces_its_own_handler(
 
 def test_job_events_log_at_info(caplog: pytest.LogCaptureFixture) -> None:
     job = Event(T, "job", "relay", None, "queued", "JOB restart relay ...", None)
-    with caplog.at_level(logging.INFO, logger="qd_service_control.events"):
+    with caplog.at_level(logging.INFO, logger="service_control_ioc.events"):
         log_event(job)
     assert [(r.levelno, r.getMessage()) for r in caplog.records] == [
         (logging.INFO, "JOB restart relay ...")

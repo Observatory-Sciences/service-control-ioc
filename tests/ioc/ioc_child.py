@@ -30,13 +30,13 @@ from dataclasses import replace
 from pathlib import Path
 from typing import TextIO
 
-from qd_service_control.config.spec import StackSpec
-from qd_service_control.ioc.app import serve_ioc
-from qd_service_control.model.deps import DependencyGraph
-from qd_service_control.model.evaluator import Evaluator, Inputs
-from qd_service_control.model.types import Event, JobOutcome, StackView, Verb
-from qd_service_control.observe.journal import JournalLine
-from qd_service_control.observe.systemd import snapshot_from_props
+from service_control_ioc.config.spec import StackSpec
+from service_control_ioc.ioc.app import serve_ioc
+from service_control_ioc.model.deps import DependencyGraph
+from service_control_ioc.model.evaluator import Evaluator, Inputs
+from service_control_ioc.model.types import Event, JobOutcome, StackView, Verb
+from service_control_ioc.observe.journal import JournalLine
+from service_control_ioc.observe.systemd import snapshot_from_props
 
 # tests/ is not a package: put it on sys.path, then import the shared fakes.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))

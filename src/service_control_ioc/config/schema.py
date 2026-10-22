@@ -4,7 +4,7 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, BeforeValidator, ConfigDict, Field
 
-from qd_service_control.config.spec import Phase, Proto
+from service_control_ioc.config.spec import Phase, Proto
 
 _RESERVED_RANGE_KEYS = {"from", "to"}
 

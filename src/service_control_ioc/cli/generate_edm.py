@@ -1,12 +1,12 @@
-"""``qd-generate-edm``: write the EDM screens."""
+"""``service-control-generate-edm``: write the EDM screens."""
 
 import argparse
 import sys
 from collections.abc import Sequence
 from pathlib import Path
 
-from qd_service_control.cli.common import EXIT_BAD_CONFIG, load_spec
-from qd_service_control.edm.screens import default_name, generate
+from service_control_ioc.cli.common import EXIT_BAD_CONFIG, load_spec
+from service_control_ioc.edm.screens import default_name, generate
 
 
 def generate_edm(config: Path, outdir: Path, name: str | None) -> None:
@@ -25,7 +25,7 @@ def generate_edm(config: Path, outdir: Path, name: str | None) -> None:
 
 def main(argv: Sequence[str] | None = None) -> None:
     parser = argparse.ArgumentParser(
-        prog="qd-generate-edm", description="Write the EDM screens."
+        prog="service-control-generate-edm", description="Write the EDM screens."
     )
     parser.add_argument("config", type=Path)
     parser.add_argument("outdir", type=Path)

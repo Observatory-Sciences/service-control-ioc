@@ -3,8 +3,8 @@
 from collections.abc import Mapping
 from dataclasses import dataclass
 
-from qd_service_control.config.spec import EdgeSpec, ListenerSpec, StackSpec
-from qd_service_control.observe.procfs import (
+from service_control_ioc.config.spec import EdgeSpec, ListenerSpec, StackSpec
+from service_control_ioc.observe.procfs import (
     TCP_ESTABLISHED,
     TCP_LISTEN,
     UDP_ESTABLISHED,

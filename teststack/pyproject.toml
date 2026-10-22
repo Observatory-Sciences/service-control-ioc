@@ -1,7 +1,7 @@
 [project]
 name = "scdemo"
 version = "0.1.0"
-description = "Demo stack of fake services for testing qd-service-control"
+description = "Demo stack of fake services for testing service-control-ioc"
 requires-python = ">=3.11"
 dependencies = [
     "pyzmq>=27.2.0",

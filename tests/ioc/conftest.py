@@ -20,8 +20,8 @@ import aioca
 import pytest_asyncio
 from aioca.types import Datatype
 
-from qd_service_control.config.spec import StackSpec
-from qd_service_control.pvnames import PvNames, pv_names
+from service_control_ioc.config.spec import StackSpec
+from service_control_ioc.pvnames import PvNames, pv_names
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # tests/, for fakes
 
@@ -118,7 +118,7 @@ class IocChild:
 
 @pytest_asyncio.fixture
 async def ioc() -> AsyncIterator[IocChild]:
-    prefix = f"QDSCT{secrets.token_hex(4).upper()}:SC"
+    prefix = f"SCIOCT{secrets.token_hex(4).upper()}:SC"
     spec = replace(scdemo_spec(), prefix=prefix)
     proc = await asyncio.create_subprocess_exec(
         sys.executable,

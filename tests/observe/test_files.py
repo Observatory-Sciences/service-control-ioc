@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from qd_service_control.observe.files import probe_file
+from service_control_ioc.observe.files import probe_file
 
 
 def test_missing_file(tmp_path: Path) -> None:

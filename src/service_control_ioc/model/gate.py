@@ -28,9 +28,9 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Final, Literal
 
-from qd_service_control.config.spec import StackSpec
-from qd_service_control.model.deps import DependencyGraph
-from qd_service_control.model.types import (
+from service_control_ioc.config.spec import StackSpec
+from service_control_ioc.model.deps import DependencyGraph
+from service_control_ioc.model.types import (
     ElementState,
     Finding,
     FindingCode,

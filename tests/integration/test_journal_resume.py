@@ -6,7 +6,7 @@ ruling 19) heals a re-read, so it cannot show a resume bug alone. The test there
 child's argv carries ``-n`` and ``--after-cursor=C``, and running that argv
 (without ``-f``) returns exactly the entries after ``C``, no backlog.
 
-Run with ``QDSC_TARGET=container|vm uv run pytest -m container
+Run with ``SCIOC_TARGET=container|vm uv run pytest -m container
 tests/integration/test_journal_resume.py -v``. Both targets keep a volatile
 journal (``/run/log/journal``, no ``/var/log/journal``); the test records that
 as a property but does not require it.

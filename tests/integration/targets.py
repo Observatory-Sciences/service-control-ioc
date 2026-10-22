@@ -1,7 +1,7 @@
 """Where the integration tests run: the Rocky 9 container or the test VM.
 
-``target_from_env()`` picks one from ``QDSC_TARGET`` (``container`` or ``vm``;
-the legacy ``QDSC_CONTAINER=1`` means container). A target runs bash as root,
+``target_from_env()`` picks one from ``SCIOC_TARGET`` (``container`` or ``vm``;
+the legacy ``SCIOC_CONTAINER=1`` means container). A target runs bash as root,
 prepares itself (sync and install the test stack) and copies files back.
 """
 
@@ -109,7 +109,7 @@ class VmTarget:
     )
     name: str = "vm"
     user: str = "xspress"
-    src: str = f"/home/{LOGIN_USER}/qd-service-control"
+    src: str = f"/home/{LOGIN_USER}/service-control-ioc"
 
     def _ssh(
         self, remote_cmd: str, timeout: float, stdin_text: str | None = None
@@ -190,9 +190,9 @@ class VmTarget:
 
 
 def target_from_env() -> Target | None:
-    """The target ``QDSC_TARGET`` names, or None (tests then skip)."""
-    choice = os.environ.get("QDSC_TARGET")
-    if choice is None and os.environ.get("QDSC_CONTAINER") == "1":
+    """The target ``SCIOC_TARGET`` names, or None (tests then skip)."""
+    choice = os.environ.get("SCIOC_TARGET")
+    if choice is None and os.environ.get("SCIOC_CONTAINER") == "1":
         choice = "container"
     if choice is None or choice == "":
         return None
@@ -200,4 +200,4 @@ def target_from_env() -> Target | None:
         return ContainerTarget()
     if choice == "vm":
         return VmTarget()
-    raise ValueError(f"QDSC_TARGET={choice!r}: expected 'container' or 'vm'")
+    raise ValueError(f"SCIOC_TARGET={choice!r}: expected 'container' or 'vm'")

@@ -1,6 +1,6 @@
 import pytest
 
-from qd_service_control.config.expr import ExprError, eval_int, interpolate
+from service_control_ioc.config.expr import ExprError, eval_int, interpolate
 
 
 def test_eval_int_arithmetic():

@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from qd_service_control.config.load import (
+from service_control_ioc.config.load import (
     ConfigFileError,
     ConfigIssue,
     load_config,

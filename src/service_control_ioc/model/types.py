@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Final, Literal
 
-from qd_service_control.config.spec import Phase
+from service_control_ioc.config.spec import Phase
 
 Verb = Literal["start", "stop", "restart"]
 

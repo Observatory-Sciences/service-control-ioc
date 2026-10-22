@@ -13,7 +13,7 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from typing import Final, Literal
 
-from qd_service_control.config.spec import (
+from service_control_ioc.config.spec import (
     EdgeSpec,
     FileSpec,
     ListenerSpec,
@@ -21,9 +21,9 @@ from qd_service_control.config.spec import (
     ServiceSpec,
     StackSpec,
 )
-from qd_service_control.model.deps import DependencyGraph
-from qd_service_control.model.gate import GateTracker, GateUpdate
-from qd_service_control.model.types import (
+from service_control_ioc.model.deps import DependencyGraph
+from service_control_ioc.model.gate import GateTracker, GateUpdate
+from service_control_ioc.model.types import (
     ElementState,
     ElementView,
     Event,
@@ -35,13 +35,13 @@ from qd_service_control.model.types import (
     UnitSnapshot,
     Verb,
 )
-from qd_service_control.observe.match import (
+from service_control_ioc.observe.match import (
     EdgeFact,
     ListenerFact,
     match_edge,
     match_listener,
 )
-from qd_service_control.observe.procfs import SocketTable
+from service_control_ioc.observe.procfs import SocketTable
 
 Kind = Literal["service", "listener", "file", "edge"]
 

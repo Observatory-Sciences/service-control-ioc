@@ -50,7 +50,7 @@ SCENARIO_UNITS: Final = (
     "scdemo-sink@1.service",
     "scdemo-sink@2.service",
     "scdemo-sc.service",
-    "qdsc-dev.service",
+    "scioc-dev.service",
 )
 _BOOL_NAMES: Final = {"0": "NOT READY", "1": "READY"}  # READY/POST_READY bi records
 STOPPED_TIMEOUT: Final = 30.0  # step 4
@@ -98,7 +98,7 @@ class Sleep:
 
 @dataclass(frozen=True)
 class RestartTool:
-    """Stop and start ``qdsc-dev`` under whatever the stack is doing."""
+    """Stop and start ``scioc-dev`` under whatever the stack is doing."""
 
 
 Step = Put | Wait | Sh | Sleep | RestartTool

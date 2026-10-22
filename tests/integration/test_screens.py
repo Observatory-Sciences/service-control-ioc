@@ -14,7 +14,7 @@ control evidence:
   the PVs and the tool's ``JOB`` events;
 - every screenshot is fetched back into ``docs/acceptance/images``.
 
-Run with ``QDSC_TARGET=vm uv run pytest -m screens
+Run with ``SCIOC_TARGET=vm uv run pytest -m screens
 tests/integration/test_screens.py -v``.
 """
 
@@ -41,14 +41,14 @@ from integration.scenarios import (
     Wait,
     scenario_session,
 )
-from qd_service_control.edm.edl import OVERALL_COLOURS
-from qd_service_control.ioc.mapping import OVERALL_STATES
+from service_control_ioc.edm.edl import OVERALL_COLOURS
+from service_control_ioc.ioc.mapping import OVERALL_STATES
 
 pytestmark = [
     pytest.mark.screens,
     pytest.mark.skipif(
-        os.environ.get("QDSC_TARGET") != "vm",
-        reason="the EDM screens are viewed on the VM (QDSC_TARGET=vm)",
+        os.environ.get("SCIOC_TARGET") != "vm",
+        reason="the EDM screens are viewed on the VM (SCIOC_TARGET=vm)",
     ),
 ]
 

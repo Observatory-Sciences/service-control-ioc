@@ -4,8 +4,8 @@ import sys
 from pathlib import Path
 from typing import Final
 
-from qd_service_control.config.load import ConfigFileError, load_config
-from qd_service_control.config.spec import StackSpec
+from service_control_ioc.config.load import ConfigFileError, load_config
+from service_control_ioc.config.spec import StackSpec
 
 EXIT_BAD_CONFIG: Final = 2
 

@@ -7,11 +7,11 @@ from pathlib import Path
 
 import pytest
 
-from qd_service_control.config.load import load_config
-from qd_service_control.config.spec import FileSpec, StackSpec
-from qd_service_control.model.deps import DependencyGraph
-from qd_service_control.model.evaluator import Evaluator, Inputs
-from qd_service_control.model.types import (
+from service_control_ioc.config.load import load_config
+from service_control_ioc.config.spec import FileSpec, StackSpec
+from service_control_ioc.model.deps import DependencyGraph
+from service_control_ioc.model.evaluator import Evaluator, Inputs
+from service_control_ioc.model.types import (
     ElementState,
     Event,
     FindingCode,
@@ -19,7 +19,7 @@ from qd_service_control.model.types import (
     OverallState,
     UnitSnapshot,
 )
-from qd_service_control.observe.procfs import (
+from service_control_ioc.observe.procfs import (
     TCP_ESTABLISHED,
     TCP_LISTEN,
     UDP_ESTABLISHED,

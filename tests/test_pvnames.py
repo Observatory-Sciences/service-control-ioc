@@ -3,12 +3,12 @@ from pathlib import Path
 import pytest
 import yaml
 
-from qd_service_control.config.load import (
+from service_control_ioc.config.load import (
     ConfigFileError,
     load_config,
     load_config_text,
 )
-from qd_service_control.pvnames import (
+from service_control_ioc.pvnames import (
     MAX_PV,
     SERVICE_FIELDS,
     pv_issues,

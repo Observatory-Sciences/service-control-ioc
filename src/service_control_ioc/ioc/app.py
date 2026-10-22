@@ -27,9 +27,9 @@ from typing import Any, Final, Protocol
 import numpy
 from softioc import alarm, asyncio_dispatcher, builder, softioc
 
-from qd_service_control.config.spec import StackSpec
-from qd_service_control.core import STACK_TARGET
-from qd_service_control.ioc.mapping import (
+from service_control_ioc.config.spec import StackSpec
+from service_control_ioc.core import STACK_TARGET
+from service_control_ioc.ioc.mapping import (
     ELEMENT_STATES,
     OVERALL_STATES,
     Severity,
@@ -41,14 +41,14 @@ from qd_service_control.ioc.mapping import (
     stack_values,
     text_waveform,
 )
-from qd_service_control.model.types import (
+from service_control_ioc.model.types import (
     Event,
     JobOutcome,
     StackView,
     Verb,
 )
-from qd_service_control.observe.journal import JournalLine
-from qd_service_control.pvnames import PvNames, pv_names
+from service_control_ioc.observe.journal import JournalLine
+from service_control_ioc.pvnames import PvNames, pv_names
 
 log = logging.getLogger(__name__)
 

@@ -1,6 +1,6 @@
 import time
 
-from qd_service_control.model.types import Finding, FindingCode, OverallState
+from service_control_ioc.model.types import Finding, FindingCode, OverallState
 
 
 def test_journal_ref_uses_local_time_minus_five_seconds() -> None:

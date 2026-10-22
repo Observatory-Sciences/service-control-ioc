@@ -1,8 +1,8 @@
 """The acceptance scenarios (``scenarios.SCENARIOS``) on a real systemd target.
 
-Run with ``QDSC_TARGET=container uv run pytest -m container
-tests/integration/test_scenarios.py -v`` (or ``QDSC_TARGET=vm``). Each run
-writes ``$QDSC_EVIDENCE/<target>/<id>.json`` (default
+Run with ``SCIOC_TARGET=container uv run pytest -m container
+tests/integration/test_scenarios.py -v`` (or ``SCIOC_TARGET=vm``). Each run
+writes ``$SCIOC_EVIDENCE/<target>/<id>.json`` (default
 ``docs/acceptance/evidence``); ``summarise.py`` turns those into tables.
 """
 

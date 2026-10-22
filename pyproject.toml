@@ -1,5 +1,5 @@
 [project]
-name = "qd-service-control"
+name = "service-control-ioc"
 version = "0.1.0"
 description = "Add your description here"
 authors = [
@@ -14,10 +14,10 @@ dependencies = [
 ]
 
 [project.scripts]
-qd-service-control = "qd_service_control.cli.ioc:main"
-qd-check-config = "qd_service_control.cli.check_config:main"
-qd-generate-edm = "qd_service_control.cli.generate_edm:main"
-qd-generate-polkit = "qd_service_control.cli.generate_polkit:main"
+service-control-ioc = "service_control_ioc.cli.ioc:main"
+service-control-check-config = "service_control_ioc.cli.check_config:main"
+service-control-generate-edm = "service_control_ioc.cli.generate_edm:main"
+service-control-generate-polkit = "service_control_ioc.cli.generate_polkit:main"
 
 [build-system]
 requires = ["uv_build>=0.13.1,<0.14.0"]
@@ -81,7 +81,7 @@ asyncio_mode = "strict"
 filterwarnings = ["error"]
 addopts = "--import-mode=importlib"
 markers = [
-  "container: needs a real systemd target, chosen by QDSC_TARGET (container or vm)",
+  "container: needs a real systemd target, chosen by SCIOC_TARGET (container or vm)",
   "screens: drives the generated EDM screens against the live IOC (needs a target)",
 ]
 

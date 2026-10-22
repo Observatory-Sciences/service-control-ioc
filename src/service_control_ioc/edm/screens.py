@@ -3,9 +3,9 @@
 import re
 from typing import Final
 
-from qd_service_control.config.spec import ServiceSpec, StackSpec
-from qd_service_control.edm import edl
-from qd_service_control.pvnames import PvNames, pv_names
+from service_control_ioc.config.spec import ServiceSpec, StackSpec
+from service_control_ioc.edm import edl
+from service_control_ioc.pvnames import PvNames, pv_names
 
 WIDTH: Final = 900
 ROW: Final = 24

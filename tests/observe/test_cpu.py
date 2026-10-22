@@ -1,4 +1,4 @@
-from qd_service_control.observe.cpu import CpuMeter
+from service_control_ioc.observe.cpu import CpuMeter
 
 
 def test_first_sample_is_baseline() -> None:

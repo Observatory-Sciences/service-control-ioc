@@ -1,12 +1,12 @@
-"""``qd-check-config``: validate and summarise a config."""
+"""``service-control-check-config``: validate and summarise a config."""
 
 import argparse
 from collections.abc import Sequence
 from pathlib import Path
 
-from qd_service_control.cli.common import load_spec
-from qd_service_control.config.spec import StackSpec
-from qd_service_control.pvnames import pv_names
+from service_control_ioc.cli.common import load_spec
+from service_control_ioc.config.spec import StackSpec
+from service_control_ioc.pvnames import pv_names
 
 
 def _summary(spec: StackSpec) -> str:
@@ -41,7 +41,7 @@ def check_config(path: Path, *, pvs: bool = False) -> None:
 
 def main(argv: Sequence[str] | None = None) -> None:
     parser = argparse.ArgumentParser(
-        prog="qd-check-config", description="Validate and summarise a config."
+        prog="service-control-check-config", description="Validate and summarise a config."
     )
     parser.add_argument("config", type=Path)
     parser.add_argument(

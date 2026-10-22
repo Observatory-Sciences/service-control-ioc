@@ -5,7 +5,7 @@ per target, each cell ``pass (<time_to_final_s> s)`` or ``FAIL (...)``.
 
 ``--gate`` lists every gate finding instead (scenario, code, dependent,
 dependency, the dependent's start time) and ends with the tally per code.
-``EVIDENCE_DIR`` defaults to ``$QDSC_EVIDENCE`` or ``docs/acceptance/evidence``,
+``EVIDENCE_DIR`` defaults to ``$SCIOC_EVIDENCE`` or ``docs/acceptance/evidence``,
 with one subdirectory per target (``container``, ``vm``).
 """
 

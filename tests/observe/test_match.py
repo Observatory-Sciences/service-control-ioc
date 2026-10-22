@@ -3,15 +3,15 @@ from pathlib import Path
 
 import pytest
 
-from qd_service_control.config.load import load_config
-from qd_service_control.config.spec import StackSpec
-from qd_service_control.observe.match import (
+from service_control_ioc.config.load import load_config
+from service_control_ioc.config.spec import StackSpec
+from service_control_ioc.observe.match import (
     EdgeFact,
     ListenerFact,
     match_edge,
     match_listener,
 )
-from qd_service_control.observe.procfs import (
+from service_control_ioc.observe.procfs import (
     TCP_ESTABLISHED,
     TCP_LISTEN,
     UDP_ESTABLISHED,

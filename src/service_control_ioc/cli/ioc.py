@@ -1,4 +1,4 @@
-"""``qd-service-control``: observe the stack, serve it as PVs, log its events."""
+"""``service-control-ioc``: observe the stack, serve it as PVs, log its events."""
 
 import argparse
 import asyncio
@@ -7,9 +7,9 @@ from collections.abc import Awaitable, Callable, Sequence
 from pathlib import Path
 from typing import Final
 
-from qd_service_control.cli.common import load_spec
-from qd_service_control.core import Core
-from qd_service_control.logs import LogFormat, log_event, setup_logging
+from service_control_ioc.cli.common import load_spec
+from service_control_ioc.core import Core
+from service_control_ioc.logs import LogFormat, log_event, setup_logging
 
 _STOP_SIGNALS: Final = (signal.SIGTERM, signal.SIGINT)
 
@@ -61,14 +61,14 @@ def run(path: Path, log_format: LogFormat, log_level: str, *, no_ioc: bool) -> N
         asyncio.run(serve(core))
         return
     # Imported here so that the other tools never load EPICS.
-    from qd_service_control.ioc.app import serve_ioc
+    from service_control_ioc.ioc.app import serve_ioc
 
     asyncio.run(serve(core, ioc=serve_ioc))
 
 
 def main(argv: Sequence[str] | None = None) -> None:
     parser = argparse.ArgumentParser(
-        prog="qd-service-control",
+        prog="service-control-ioc",
         description="Observe the stack, serve it as PVs and log its events.",
     )
     parser.add_argument("config", type=Path)

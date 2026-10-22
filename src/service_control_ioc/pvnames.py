@@ -9,7 +9,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Final
 
-from qd_service_control.config.spec import StackSpec
+from service_control_ioc.config.spec import StackSpec
 
 STACK_FIELDS: Final = ("READY", "STATE", "POST_READY", "FAULTS", "FAULT_MSG", "EVENTS")
 CONTROL_FIELDS: Final = ("START", "STOP", "RESTART", "LASTJOB")

@@ -2,8 +2,8 @@ from pathlib import Path
 
 import pytest
 
-from qd_service_control.observe import procfs
-from qd_service_control.observe.procfs import (
+from service_control_ioc.observe import procfs
+from service_control_ioc.observe.procfs import (
     TCP_ESTABLISHED,
     TCP_LISTEN,
     UDP_UNCONN,

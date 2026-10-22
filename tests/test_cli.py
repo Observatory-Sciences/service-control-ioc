@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from qd_service_control.cli import check_config, ioc
+from service_control_ioc.cli import check_config, ioc
 
 REPO = Path(__file__).resolve().parents[1]
 SCDEMO = REPO / "teststack/config/scdemo.yaml"
@@ -60,10 +60,10 @@ def test_check_config_pvs_lists_names(capsys):
 def test_check_config_does_not_import_softioc() -> None:
     code = (
         "import sys\n"
-        "from qd_service_control.cli.check_config import main\n"
+        "from service_control_ioc.cli.check_config import main\n"
         "main([sys.argv[1], '--pvs'])\n"
         "assert 'softioc' not in sys.modules\n"
-        "assert 'qd_service_control.ioc.app' not in sys.modules\n"
+        "assert 'service_control_ioc.ioc.app' not in sys.modules\n"
     )
     result = subprocess.run(
         [sys.executable, "-I", "-c", code, str(SCDEMO)],
@@ -78,11 +78,11 @@ def test_check_config_does_not_import_softioc() -> None:
 def test_generate_edm_does_not_import_softioc(tmp_path: Path) -> None:
     code = (
         "import sys\n"
-        "from qd_service_control.cli.generate_edm import main\n"
+        "from service_control_ioc.cli.generate_edm import main\n"
         "main([sys.argv[1], sys.argv[2]])\n"
         "assert 'softioc' not in sys.modules\n"
         "assert 'aioca' not in sys.modules\n"
-        "assert 'qd_service_control.ioc.app' not in sys.modules\n"
+        "assert 'service_control_ioc.ioc.app' not in sys.modules\n"
     )
     outdir = tmp_path / "edm"
     result = subprocess.run(

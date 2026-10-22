@@ -1,8 +1,8 @@
 """Fixtures for the integration tests (``-m container``).
 
-They run against a real systemd target chosen by ``QDSC_TARGET`` (``container``,
+They run against a real systemd target chosen by ``SCIOC_TARGET`` (``container``,
 the plan 1 Rocky 9 container, or ``vm``, the test VM; see ``targets.py``) and
-run ``qd-service-control`` there as the transient unit ``qdsc-dev``, against
+run ``service-control-ioc`` there as the transient unit ``scioc-dev``, against
 real systemd, D-Bus, /proc and journald. The tool serves its IOC there too, on
 the loopback CA of ``/etc/scdemo/ca.env``; ``Host.ca`` reads and writes its PVs
 with ``ca_client.py`` on the target. Skipped unless a target is selected.
@@ -21,12 +21,12 @@ from integration.targets import ShellError, Target, target_from_env
 
 __all__ = ["ShellError"]
 
-TOOL_UNIT: Final = "qdsc-dev"
+TOOL_UNIT: Final = "scioc-dev"
 SC_UNIT: Final = "scdemo-sc.service"
 CA_ENV: Final = "/etc/scdemo/ca.env"
 CA_PYTHON: Final = "/opt/scdemo/ca-venv/bin/python"
-TOOL_BIN_DIR: Final = "/opt/qd-service-control/venv/bin"
-TOOL_BIN: Final = f"{TOOL_BIN_DIR}/qd-service-control"
+TOOL_BIN_DIR: Final = "/opt/service-control-ioc/venv/bin"
+TOOL_BIN: Final = f"{TOOL_BIN_DIR}/service-control-ioc"
 CONFIG: Final = "/etc/scdemo/scdemo-sc.yaml"
 RULE: Final = "/etc/polkit-1/rules.d/40-scdemo-sc.rules"
 TOOL_CMD: Final = f"{TOOL_BIN} {CONFIG} --log-format json"
@@ -51,7 +51,7 @@ Event = dict[str, object]
 def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
     if target_from_env() is not None:
         return
-    skip = pytest.mark.skip(reason="integration tests need QDSC_TARGET=container|vm")
+    skip = pytest.mark.skip(reason="integration tests need SCIOC_TARGET=container|vm")
     for item in items:
         if "container" in item.keywords:
             item.add_marker(skip)
@@ -110,7 +110,7 @@ class Host:
     # -- the tool -------------------------------------------------------------
 
     def start_tool(self) -> None:
-        """Run the tool as the transient unit ``qdsc-dev`` (the target's user)."""
+        """Run the tool as the transient unit ``scioc-dev`` (the target's user)."""
         self.stop_tool()
         self.sh(
             f"systemd-run --quiet --unit={TOOL_UNIT}"
@@ -122,7 +122,7 @@ class Host:
         self.invocation = self.sh(
             f"systemctl show -p InvocationID --value {TOOL_UNIT}"
         ).strip()
-        assert self.invocation, "qdsc-dev has no invocation ID"
+        assert self.invocation, "scioc-dev has no invocation ID"
 
     def stop_tool(self) -> None:
         self.sh(
@@ -131,7 +131,7 @@ class Host:
         )
 
     def tool_lines(self, invocation: str | None = None) -> list[str]:
-        """Every stdout line of the current ``qdsc-dev`` run (or ``invocation``)."""
+        """Every stdout line of the current ``scioc-dev`` run (or ``invocation``)."""
         invocation = invocation or self.invocation
         assert invocation, "start_tool() first"
         out = self.sh(
@@ -255,7 +255,7 @@ class Host:
         before = len(self._polkit_loads())
         self.sh(
             "set -e\n"
-            f"{TOOL_BIN_DIR}/qd-generate-polkit {CONFIG} --user {self.user}"
+            f"{TOOL_BIN_DIR}/service-control-generate-polkit {CONFIG} --user {self.user}"
             " > /root/40-scdemo-sc.rules\n"
             f"install -m 0644 /root/40-scdemo-sc.rules {RULE}"
         )
@@ -266,7 +266,7 @@ class Host:
 def container_session() -> Host:
     target = target_from_env()
     if target is None:
-        pytest.skip("integration tests need QDSC_TARGET=container|vm")
+        pytest.skip("integration tests need SCIOC_TARGET=container|vm")
     target.prepare()
     return Host(target)
 

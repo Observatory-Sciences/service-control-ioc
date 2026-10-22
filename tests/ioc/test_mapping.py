@@ -4,7 +4,7 @@ import time
 from dataclasses import replace
 
 from fakes import scdemo_spec
-from qd_service_control.ioc.mapping import (
+from service_control_ioc.ioc.mapping import (
     ELEMENT_STATES,
     OVERALL_STATES,
     describe,
@@ -17,9 +17,9 @@ from qd_service_control.ioc.mapping import (
     stack_values,
     text_waveform,
 )
-from qd_service_control.model.deps import DependencyGraph
-from qd_service_control.model.evaluator import Evaluator
-from qd_service_control.model.types import (
+from service_control_ioc.model.deps import DependencyGraph
+from service_control_ioc.model.evaluator import Evaluator
+from service_control_ioc.model.types import (
     ElementState,
     ElementView,
     Finding,
@@ -238,7 +238,7 @@ def test_describe_scdemo() -> None:
 
 
 def test_describe_file_and_no_address() -> None:
-    from qd_service_control.config.spec import FileSpec
+    from service_control_ioc.config.spec import FileSpec
 
     spec = replace(
         SPEC,

@@ -1,6 +1,6 @@
 """Scenario evidence: one JSON file per scenario and target.
 
-``QDSC_EVIDENCE`` (default ``docs/acceptance/evidence``) ``/<target>/<id>.json``
+``SCIOC_EVIDENCE`` (default ``docs/acceptance/evidence``) ``/<target>/<id>.json``
 holds ``scenario``, ``title``, ``target``, ``arch``, ``started``, ``passed``,
 ``failures``, ``expect``, ``observed`` (``pvs``, ``findings``, ``cleared``,
 ``stack_states``, ``time_to_final_s``), ``gate`` (each gate event's text, its
@@ -56,8 +56,8 @@ class EvidenceJson(TypedDict):
 
 
 def evidence_dir() -> Path:
-    """The evidence root: ``$QDSC_EVIDENCE`` or ``docs/acceptance/evidence``."""
-    value = os.environ.get("QDSC_EVIDENCE")
+    """The evidence root: ``$SCIOC_EVIDENCE`` or ``docs/acceptance/evidence``."""
+    value = os.environ.get("SCIOC_EVIDENCE")
     return Path(value) if value else DEFAULT_DIR
 
 

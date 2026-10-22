@@ -4,8 +4,8 @@ from collections.abc import Callable, Sequence
 import pytest
 
 from fakes import SERVICE_IFACE, UNIT_IFACE, FakeBus, FakeSystemd, unit_props
-from qd_service_control.model.types import UnitSnapshot
-from qd_service_control.observe.systemd import (
+from service_control_ioc.model.types import UnitSnapshot
+from service_control_ioc.observe.systemd import (
     SystemdObserver,
     snapshot_from_props,
     unit_path,

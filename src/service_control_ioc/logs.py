@@ -13,13 +13,13 @@ import sys
 from datetime import datetime
 from typing import Final, Literal, TypedDict
 
-from qd_service_control.model.types import Event, Finding
+from service_control_ioc.model.types import Event, Finding
 
 LogFormat = Literal["text", "json"]
 
-EVENT_LOGGER: Final = "qd_service_control.events"
+EVENT_LOGGER: Final = "service_control_ioc.events"
 _WARNING_KINDS: Final = frozenset({"finding", "gate"})
-_HANDLER_MARK: Final = "_qd_service_control"
+_HANDLER_MARK: Final = "_service_control_ioc"
 
 log = logging.getLogger(EVENT_LOGGER)
 

@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from qd_service_control.observe.journal import (
+from service_control_ioc.observe.journal import (
     JournalLine,
     JournalTail,
     decode_message,
@@ -128,7 +128,7 @@ async def test_tail_reads_fake_journalctl(
         journalctl=[sys.executable, str(FAKE)],
         backoff=(60,),
     )
-    caplog.set_level(logging.DEBUG, logger="qd_service_control.observe.journal")
+    caplog.set_level(logging.DEBUG, logger="service_control_ioc.observe.journal")
     task = asyncio.create_task(tail.run())
     try:
         async with asyncio.timeout(5):
@@ -186,7 +186,7 @@ async def test_permission_failure_logs_once_and_backs_off(
         journalctl=[sys.executable, str(FAKE)],
         backoff=(0.05,),
     )
-    caplog.set_level(logging.DEBUG, logger="qd_service_control.observe.journal")
+    caplog.set_level(logging.DEBUG, logger="service_control_ioc.observe.journal")
     task = asyncio.create_task(tail.run())
     await asyncio.sleep(0.5)
     task.cancel()
@@ -233,7 +233,7 @@ async def test_spawn_failure_logs_once_and_retries(
         return original()
 
     tail._command = counting  # ty: ignore[invalid-assignment] - test spy
-    caplog.set_level(logging.DEBUG, logger="qd_service_control.observe.journal")
+    caplog.set_level(logging.DEBUG, logger="service_control_ioc.observe.journal")
     task = asyncio.create_task(tail.run())
     await asyncio.sleep(0.5)
     assert not task.done()

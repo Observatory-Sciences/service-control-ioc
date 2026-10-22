@@ -1,4 +1,4 @@
-# qd-service-control: v1 design
+# service-control-ioc: v1 design
 
 Date: 2026-10-19. Status: draft for review.
 
@@ -371,7 +371,7 @@ set on the state records, so EDM's alarm colours work without extra logic.
 ### 8.3 EDM screen
 
 Generated from the same YAML by a subcommand of the tool, for example
-`qd-service-control generate-edm <config> <outdir>`. It isn't interactive,
+`service-control-ioc generate-edm <config> <outdir>`. It isn't interactive,
 so it keeps the spirit of D11. It generates:
 
 - a top screen with the overall indicator, the stack controls, a fault
@@ -431,7 +431,7 @@ integer arithmetic on the instance number, never `eval`.
 
 ### 9.2 Files this repo ships, ready to package
 
-- The Python package, with `qd-service-control` and its subcommands `run`
+- The Python package, with `service-control-ioc` and its subcommands `run`
   (the IOC), `check-config`, `generate-edm` and `generate-polkit`.
 - A systemd unit for the tool (runs as the stack user, `Type=notify` or
   `simple` at the builder's choice, restart on failure).

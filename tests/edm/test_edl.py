@@ -1,7 +1,7 @@
 import re
 
-from qd_service_control.edm import edl
-from qd_service_control.ioc.mapping import ELEMENT_STATES, OVERALL_STATES
+from service_control_ioc.edm import edl
+from service_control_ioc.ioc.mapping import ELEMENT_STATES, OVERALL_STATES
 
 
 def test_led_has_one_rectangle_per_state() -> None:

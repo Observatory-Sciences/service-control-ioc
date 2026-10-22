@@ -8,10 +8,10 @@ from pathlib import Path
 
 import pytest
 
-from qd_service_control.cli.generate_polkit import main
-from qd_service_control.config.load import load_config
-from qd_service_control.config.spec import StackSpec
-from qd_service_control.polkit import polkit_rule
+from service_control_ioc.cli.generate_polkit import main
+from service_control_ioc.config.load import load_config
+from service_control_ioc.config.spec import StackSpec
+from service_control_ioc.polkit import polkit_rule
 
 REPO = Path(__file__).resolve().parents[1]
 SCDEMO = REPO / "teststack/config/scdemo.yaml"
@@ -135,7 +135,7 @@ def test_polkit_rule_behaviour_under_node(tmp_path: Path) -> None:
     ]
     assert results[0][1] == []
     assert results[2][1] == [
-        "qd-service-control: denied scdemo unit=scdemo-hwsim.service verb=start"
+        "service-control-ioc: denied scdemo unit=scdemo-hwsim.service verb=start"
     ]
     assert results[5][1] == []
 
@@ -194,10 +194,10 @@ def test_polkit_rule_injection_under_node(tmp_path: Path, evil: str) -> None:
 def test_generate_polkit_does_not_import_softioc() -> None:
     code = (
         "import sys\n"
-        "from qd_service_control.cli.generate_polkit import main\n"
+        "from service_control_ioc.cli.generate_polkit import main\n"
         "main([sys.argv[1], '--user', 'scdemo'])\n"
         "assert 'softioc' not in sys.modules\n"
-        "assert 'qd_service_control.ioc.app' not in sys.modules\n"
+        "assert 'service_control_ioc.ioc.app' not in sys.modules\n"
     )
     result = subprocess.run(
         [sys.executable, "-I", "-c", code, str(SCDEMO)],

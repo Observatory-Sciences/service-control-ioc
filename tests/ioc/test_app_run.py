@@ -6,11 +6,11 @@ from pathlib import Path
 
 import pytest
 
-from qd_service_control.config.load import load_config
-from qd_service_control.config.spec import StackSpec
-from qd_service_control.ioc.app import Ioc
-from qd_service_control.model.types import Event, JobOutcome, StackView, Verb
-from qd_service_control.observe.journal import JournalLine
+from service_control_ioc.config.load import load_config
+from service_control_ioc.config.spec import StackSpec
+from service_control_ioc.ioc.app import Ioc
+from service_control_ioc.model.types import Event, JobOutcome, StackView, Verb
+from service_control_ioc.observe.journal import JournalLine
 
 SCDEMO = Path(__file__).resolve().parents[2] / "teststack" / "config" / "scdemo.yaml"
 
@@ -27,7 +27,7 @@ class RefusingApi:
 
     @property
     def spec(self) -> StackSpec:
-        return replace(load_config(SCDEMO), prefix="QDSCRUN:SC")
+        return replace(load_config(SCDEMO), prefix="SCIOCRUN:SC")
 
     def view(self) -> StackView:
         raise AssertionError("run() must not publish after a failed subscribe")

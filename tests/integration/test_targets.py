@@ -39,18 +39,18 @@ class FakeRun:
 @pytest.mark.parametrize(
     ("env", "expected"),
     [
-        ({"QDSC_TARGET": "container"}, ContainerTarget),
-        ({"QDSC_TARGET": "vm"}, VmTarget),
-        ({"QDSC_CONTAINER": "1"}, ContainerTarget),
+        ({"SCIOC_TARGET": "container"}, ContainerTarget),
+        ({"SCIOC_TARGET": "vm"}, VmTarget),
+        ({"SCIOC_CONTAINER": "1"}, ContainerTarget),
         ({}, None),
-        ({"QDSC_CONTAINER": "0"}, None),
+        ({"SCIOC_CONTAINER": "0"}, None),
     ],
 )
 def test_target_from_env(
     monkeypatch: pytest.MonkeyPatch, env: dict[str, str], expected: type | None
 ) -> None:
-    monkeypatch.delenv("QDSC_TARGET", raising=False)
-    monkeypatch.delenv("QDSC_CONTAINER", raising=False)
+    monkeypatch.delenv("SCIOC_TARGET", raising=False)
+    monkeypatch.delenv("SCIOC_CONTAINER", raising=False)
     for key, value in env.items():
         monkeypatch.setenv(key, value)
     target = target_from_env()
@@ -61,7 +61,7 @@ def test_target_from_env(
 
 
 def test_target_from_env_rejects_unknown(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("QDSC_TARGET", "mainframe")
+    monkeypatch.setenv("SCIOC_TARGET", "mainframe")
     with pytest.raises(ValueError, match="mainframe"):
         target_from_env()
 
@@ -75,7 +75,7 @@ def test_target_attributes() -> None:
     assert (VmTarget.name, VmTarget.user, VmTarget.src) == (
         "vm",
         "xspress",
-        "/home/vmuser/qd-service-control",
+        "/home/vmuser/service-control-ioc",
     )
 
 
@@ -130,12 +130,12 @@ def test_vm_prepare_rsync_excludes(monkeypatch: pytest.MonkeyPatch) -> None:
     excludes = [rsync[i + 1] for i, arg in enumerate(rsync) if arg == "--exclude"]
     assert {".venv", ".git", "__pycache__", ".ruff_cache"} <= set(excludes)
     assert "--delete" in rsync
-    assert rsync[-1] == "test-vm:/home/vmuser/qd-service-control/"
-    assert Path(rsync[-2]).name == "qd-service-control"
+    assert rsync[-1] == "test-vm:/home/vmuser/service-control-ioc/"
+    assert Path(rsync[-2]).name == "service-control-ioc"
     install = fake.calls[2]
     assert install[-1].endswith(
-        "bash /home/vmuser/qd-service-control/teststack/install.sh --user xspress"
-        " /home/vmuser/qd-service-control'"
+        "bash /home/vmuser/service-control-ioc/teststack/install.sh --user xspress"
+        " /home/vmuser/service-control-ioc'"
     )
 
 

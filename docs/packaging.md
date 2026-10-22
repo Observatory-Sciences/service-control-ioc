@@ -1,4 +1,4 @@
-# Packaging qd-service-control in `qd-rpm-build`
+# Packaging service-control-ioc in `qd-rpm-build`
 
 These are proposals for `qd-rpm-build` (spec Section 9.3). They are described
 here and not made: `qd-rpm-build` changes need the maintainers' approval. The
@@ -32,8 +32,8 @@ Build a self-contained venv at build time from the lock, runtime dependencies
 only and non-editable:
 
 ```bash
-UV_PROJECT_ENVIRONMENT=/opt/qd-service-control/venv \
-    uv sync --frozen --no-dev --no-editable --package qd-service-control
+UV_PROJECT_ENVIRONMENT=/opt/service-control-ioc/venv \
+    uv sync --frozen --no-dev --no-editable --package service-control-ioc
 ```
 
 `teststack/install.sh` does exactly this. Notes for the SPEC:
@@ -58,7 +58,7 @@ Model it on `teststack/systemd/scdemo-sc.service`:
 
 ```ini
 [Unit]
-Description=qd-service-control for the QD Xspress stack
+Description=service-control-ioc for the QD Xspress stack
 After=dbus.service
 [Service]
 Type=simple
@@ -67,7 +67,7 @@ Group=qdctl
 SupplementaryGroups=systemd-journal
 Environment=PYTHONUNBUFFERED=1
 EnvironmentFile=/etc/xspress.d/epics.env
-ExecStart=/opt/qd-service-control/venv/bin/qd-service-control /etc/xspress.d/qd-service-control.yaml
+ExecStart=/opt/service-control-ioc/venv/bin/service-control-ioc /etc/xspress.d/service-control-ioc.yaml
 Restart=on-failure
 RestartSec=5
 [Install]
@@ -85,11 +85,11 @@ WantedBy=multi-user.target
 ## 4. The polkit rule
 
 Generate it at build time from the same YAML, and install it as
-`/etc/polkit-1/rules.d/40-qd-service-control.rules`, mode 0644:
+`/etc/polkit-1/rules.d/40-service-control-ioc.rules`, mode 0644:
 
 ```bash
-qd-generate-polkit qd-service-control.yaml --user qdctl \
-    > 40-qd-service-control.rules
+service-control-generate-polkit service-control-ioc.yaml --user qdctl \
+    > 40-service-control-ioc.rules
 ```
 
 The rule handles only `org.freedesktop.systemd1.manage-units` for that user.
@@ -105,7 +105,7 @@ change it.
 ## 5. The EDM screen, generated at build time
 
 ```bash
-qd-generate-edm qd-service-control.yaml <edl-dir>
+service-control-generate-edm service-control-ioc.yaml <edl-dir>
 ```
 
 Install the generated `.edl` files with the other QD screens (where

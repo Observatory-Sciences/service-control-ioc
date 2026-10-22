@@ -1,4 +1,4 @@
-from qd_service_control.model.deps import DependencyGraph
+from service_control_ioc.model.deps import DependencyGraph
 
 AFTER = {
     "ctl": ["relay", "net.target"],

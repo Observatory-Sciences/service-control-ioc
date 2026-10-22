@@ -1,7 +1,7 @@
 """The soft IOC against the real scdemo stack in the Rocky 9 systemd container.
 
-Run with ``QDSC_TARGET=container uv run pytest -m container -v``. The tool runs as
-``scdemo`` (the transient ``qdsc-dev`` unit, or ``scdemo-sc.service``), so its
+Run with ``SCIOC_TARGET=container uv run pytest -m container -v``. The tool runs as
+``scdemo`` (the transient ``scioc-dev`` unit, or ``scdemo-sc.service``), so its
 unit jobs go through the polkit rule that ``install.sh`` generates.
 """
 
@@ -39,7 +39,7 @@ def start_tool_and_wait_stopped(container) -> None:
 def test_every_pv_served_in_container(container) -> None:
     start_tool_and_wait_stopped(container)
     names = (
-        f"/opt/qd-service-control/venv/bin/qd-check-config --pvs"
+        f"/opt/service-control-ioc/venv/bin/service-control-check-config --pvs"
         f" {container.target.src}/teststack/config/scdemo.yaml | grep '^{P}:'"
     )
     count = int(container.sh(f"{names} | wc -l").strip())

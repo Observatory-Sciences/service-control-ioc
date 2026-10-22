@@ -29,14 +29,14 @@
       "updated": 1792411485293,
       "link": null,
       "locked": false,
-      "text": "qd-service-control: architecture",
+      "text": "service-control-ioc: architecture",
       "fontSize": 28,
       "fontFamily": 1,
       "textAlign": "left",
       "verticalAlign": "top",
       "baseline": 25,
       "containerId": null,
-      "originalText": "qd-service-control: architecture",
+      "originalText": "service-control-ioc: architecture",
       "lineHeight": 1.25
     },
     {

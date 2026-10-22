@@ -1,5 +1,5 @@
 [Unit]
-Description=qd-service-control for the scdemo test stack
+Description=service-control-ioc for the scdemo test stack
 After=dbus.service
 [Service]
 Type=simple
@@ -8,7 +8,7 @@ Group=scdemo
 SupplementaryGroups=systemd-journal
 Environment=PYTHONUNBUFFERED=1
 EnvironmentFile=/etc/scdemo/ca.env
-ExecStart=/opt/qd-service-control/venv/bin/qd-service-control /etc/scdemo/scdemo-sc.yaml
+ExecStart=/opt/service-control-ioc/venv/bin/service-control-ioc /etc/scdemo/scdemo-sc.yaml
 Restart=on-failure
 RestartSec=5
 [Install]

@@ -15,8 +15,8 @@ from dbus_fast import BusType, DBusError
 from dbus_fast.aio import MessageBus, ProxyInterface
 from dbus_fast.introspection import Node
 
-from qd_service_control.model.types import UnitSnapshot, Verb
-from qd_service_control.observe.systemd_xml import MANAGER_XML, PROPERTIES_XML
+from service_control_ioc.model.types import UnitSnapshot, Verb
+from service_control_ioc.observe.systemd_xml import MANAGER_XML, PROPERTIES_XML
 
 log = logging.getLogger(__name__)
 

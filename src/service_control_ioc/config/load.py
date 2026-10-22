@@ -9,8 +9,8 @@ from typing import Any, Final, Literal, TypeVar
 import yaml
 from pydantic import ValidationError
 
-from qd_service_control.config.expr import ExprError, eval_int, interpolate
-from qd_service_control.config.schema import (
+from service_control_ioc.config.expr import ExprError, eval_int, interpolate
+from service_control_ioc.config.schema import (
     ConfigRaw,
     EdgeRaw,
     FileRaw,
@@ -18,7 +18,7 @@ from qd_service_control.config.schema import (
     ListenerRaw,
     ServiceRaw,
 )
-from qd_service_control.config.spec import (
+from service_control_ioc.config.spec import (
     Defaults,
     EdgeSpec,
     FileSpec,
@@ -31,7 +31,7 @@ from qd_service_control.config.spec import (
     ServiceSpec,
     StackSpec,
 )
-from qd_service_control.pvnames import pv_issues, token
+from service_control_ioc.pvnames import pv_issues, token
 
 _MIN_PORT = 1
 _MAX_PORT = 65535

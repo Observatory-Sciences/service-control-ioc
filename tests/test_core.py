@@ -28,13 +28,13 @@ from fakes import (
     scdemo_table,
     unit_props,
 )
-from qd_service_control.cli.ioc import serve
-from qd_service_control.config.spec import StackSpec
-from qd_service_control.core import Core
-from qd_service_control.ioc.app import CoreApi
-from qd_service_control.model.types import ElementState, Event, OverallState
-from qd_service_control.observe.journal import JournalLine
-from qd_service_control.observe.systemd import SystemdJobError
+from service_control_ioc.cli.ioc import serve
+from service_control_ioc.config.spec import StackSpec
+from service_control_ioc.core import Core
+from service_control_ioc.ioc.app import CoreApi
+from service_control_ioc.model.types import ElementState, Event, OverallState
+from service_control_ioc.observe.journal import JournalLine
+from service_control_ioc.observe.systemd import SystemdJobError
 
 SPEC = scdemo_spec()
 UNITS = {sid: s.unit for sid, s in SPEC.services.items()}
@@ -449,7 +449,7 @@ async def test_core_subscriber_exception_does_not_stop(
 async def test_scan_error_makes_elements_unknown(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    caplog.set_level(logging.INFO, logger="qd_service_control")
+    caplog.set_level(logging.INFO, logger="service_control_ioc")
     h = Harness(stack(), ScriptedScan(scdemo_table(SPEC, EVERYTHING)), FakeClock(T))
     async with running(h.core):
         await h.wait_text("stack ready")

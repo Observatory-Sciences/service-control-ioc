@@ -4,11 +4,11 @@ from pathlib import Path
 
 import pytest
 
-from qd_service_control.cli import generate_edm
-from qd_service_control.config.load import load_config, load_config_text
-from qd_service_control.config.spec import StackSpec
-from qd_service_control.edm.screens import default_name, generate
-from qd_service_control.pvnames import pv_names
+from service_control_ioc.cli import generate_edm
+from service_control_ioc.config.load import load_config, load_config_text
+from service_control_ioc.config.spec import StackSpec
+from service_control_ioc.edm.screens import default_name, generate
+from service_control_ioc.pvnames import pv_names
 
 REPO = Path(__file__).resolve().parents[2]
 SCDEMO = REPO / "teststack/config/scdemo.yaml"

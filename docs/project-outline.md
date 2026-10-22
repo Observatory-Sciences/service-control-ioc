@@ -1,4 +1,4 @@
-# qd-service-control: project outline
+# service-control-ioc: project outline
 
 Status: input to the detailed design and plan. It sets out the problem, the
 goals, the main concepts and the architectural direction. Section 10 records
@@ -29,7 +29,7 @@ service, or which pair of services, is at fault and which log to read.
 
 ## 2. Goals
 
-`qd-service-control` must let the end user:
+`service-control-ioc` must let the end user:
 
 1. **See startup progress.** Watch units start, ports start listening and
    connections get made, as it happens, from one place (EPICS PVs and the

@@ -5,10 +5,10 @@ from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 
-from qd_service_control.config.load import load_config
-from qd_service_control.model.deps import DependencyGraph
-from qd_service_control.model.evaluator import Evaluator, Inputs
-from qd_service_control.model.types import (
+from service_control_ioc.config.load import load_config
+from service_control_ioc.model.deps import DependencyGraph
+from service_control_ioc.model.evaluator import Evaluator, Inputs
+from service_control_ioc.model.types import (
     ElementState,
     Event,
     Finding,
@@ -16,7 +16,7 @@ from qd_service_control.model.types import (
     OverallState,
     UnitSnapshot,
 )
-from qd_service_control.observe.procfs import (
+from service_control_ioc.observe.procfs import (
     TCP_ESTABLISHED,
     TCP_LISTEN,
     UDP_ESTABLISHED,
