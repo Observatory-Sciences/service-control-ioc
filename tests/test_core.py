@@ -28,7 +28,7 @@ from fakes import (
     scdemo_table,
     unit_props,
 )
-from qd_service_control.cli import serve
+from qd_service_control.cli.ioc import serve
 from qd_service_control.config.spec import StackSpec
 from qd_service_control.core import Core
 from qd_service_control.ioc.app import CoreApi

@@ -14,7 +14,10 @@ dependencies = [
 ]
 
 [project.scripts]
-qd-service-control = "qd_service_control:main"
+qd-service-control = "qd_service_control.cli.ioc:main"
+qd-check-config = "qd_service_control.cli.check_config:main"
+qd-generate-edm = "qd_service_control.cli.generate_edm:main"
+qd-generate-polkit = "qd_service_control.cli.generate_polkit:main"
 
 [build-system]
 requires = ["uv_build>=0.13.1,<0.14.0"]

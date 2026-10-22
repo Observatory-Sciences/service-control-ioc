@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from qd_service_control import cli
+from qd_service_control.cli import generate_edm
 from qd_service_control.config.load import load_config, load_config_text
 from qd_service_control.config.spec import StackSpec
 from qd_service_control.edm.screens import default_name, generate
@@ -107,7 +107,7 @@ def test_generate_edm_cli_writes_files(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     out = tmp_path / "new" / "dir"
-    cli.main(["generate-edm", str(SCDEMO), str(out)])
+    generate_edm.main([str(SCDEMO), str(out)])
     printed = capsys.readouterr().out.split()
     written = sorted(p for p in out.iterdir())
     assert len(written) == 5
@@ -174,7 +174,7 @@ def test_generate_edm_reports_collision_without_traceback(
     config = tmp_path / "c.yaml"
     config.write_text(_COLLIDING)
     with pytest.raises(SystemExit) as e:
-        cli.main(["generate-edm", str(config), str(tmp_path / "out")])
+        generate_edm.main([str(config), str(tmp_path / "out")])
     assert e.value.code == 2
     assert "same screen file" in capsys.readouterr().err
 

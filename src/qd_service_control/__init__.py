@@ -1,3 +1,1 @@
-from qd_service_control.cli import main
-
-__all__ = ["main"]
+"""Service control for the QD Odin stack."""

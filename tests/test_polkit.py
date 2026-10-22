@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from qd_service_control import main
+from qd_service_control.cli.generate_polkit import main
 from qd_service_control.config.load import load_config
 from qd_service_control.config.spec import StackSpec
 from qd_service_control.polkit import polkit_rule
@@ -53,14 +53,14 @@ def test_polkit_rule_escapes_user() -> None:
 
 
 def test_generate_polkit_cli(capsys) -> None:
-    main(["generate-polkit", str(SCDEMO), "--user", "scdemo"])
+    main([str(SCDEMO), "--user", "scdemo"])
     out = capsys.readouterr().out
     assert out == polkit_rule(load_config(SCDEMO), "scdemo")
 
 
 def test_generate_polkit_cli_needs_user(capsys) -> None:
     with pytest.raises(SystemExit) as e:
-        main(["generate-polkit", str(SCDEMO)])
+        main([str(SCDEMO)])
     assert e.value.code == 2
     assert "--user" in capsys.readouterr().err
 
@@ -194,8 +194,8 @@ def test_polkit_rule_injection_under_node(tmp_path: Path, evil: str) -> None:
 def test_generate_polkit_does_not_import_softioc() -> None:
     code = (
         "import sys\n"
-        "from qd_service_control import main\n"
-        "main(['generate-polkit', sys.argv[1], '--user', 'scdemo'])\n"
+        "from qd_service_control.cli.generate_polkit import main\n"
+        "main([sys.argv[1], '--user', 'scdemo'])\n"
         "assert 'softioc' not in sys.modules\n"
         "assert 'qd_service_control.ioc.app' not in sys.modules\n"
     )

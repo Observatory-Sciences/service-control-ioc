@@ -4,14 +4,14 @@ from pathlib import Path
 
 import pytest
 
-from qd_service_control import main
+from qd_service_control.cli import check_config, ioc
 
 REPO = Path(__file__).resolve().parents[1]
 SCDEMO = REPO / "teststack/config/scdemo.yaml"
 
 
 def test_check_config_cli(capsys):
-    main(["check-config", str(SCDEMO)])
+    check_config.main([str(SCDEMO)])
     out = capsys.readouterr().out
     assert out.startswith(
         "services: 4, listeners: 10, files: 0, hosts: 1, edges: 12 (pre 6, post 6), groups: 1"
@@ -30,7 +30,7 @@ def test_check_config_cli_reports_issues_and_exits_2(tmp_path, capsys):
         "prefix: P\ntop: svc\nservices: {svc: {unit: s.service, bogus: 1}}\n"
     )
     with pytest.raises(SystemExit) as e:
-        main(["check-config", str(bad)])
+        check_config.main([str(bad)])
     assert e.value.code == 2
     err = capsys.readouterr().err
     assert f"{bad}: services.svc.bogus: " in err
@@ -40,15 +40,15 @@ def test_run_cli_bad_config_exits_2(tmp_path, capsys):
     bad = tmp_path / "bad.yaml"
     bad.write_text("prefix: P\ntop: svc\nservices: {svc: {unit: s.service, port: 1}}\n")
     with pytest.raises(SystemExit) as e:
-        main(["run", str(bad), "--log-format", "json"])
+        ioc.main([str(bad), "--log-format", "json"])
     assert e.value.code == 2
     assert f"{bad}: services.svc.port: " in capsys.readouterr().err
 
 
 def test_check_config_pvs_lists_names(capsys):
-    main(["check-config", str(SCDEMO)])
+    check_config.main([str(SCDEMO)])
     plain = capsys.readouterr().out.splitlines()
-    main(["check-config", str(SCDEMO), "--pvs"])
+    check_config.main([str(SCDEMO), "--pvs"])
     with_pvs = capsys.readouterr().out.splitlines()
     assert with_pvs[0] == plain[0]
     assert with_pvs[: len(plain)] == plain
@@ -60,8 +60,8 @@ def test_check_config_pvs_lists_names(capsys):
 def test_check_config_does_not_import_softioc() -> None:
     code = (
         "import sys\n"
-        "from qd_service_control import main\n"
-        "main(['check-config', sys.argv[1], '--pvs'])\n"
+        "from qd_service_control.cli.check_config import main\n"
+        "main([sys.argv[1], '--pvs'])\n"
         "assert 'softioc' not in sys.modules\n"
         "assert 'qd_service_control.ioc.app' not in sys.modules\n"
     )
@@ -78,8 +78,8 @@ def test_check_config_does_not_import_softioc() -> None:
 def test_generate_edm_does_not_import_softioc(tmp_path: Path) -> None:
     code = (
         "import sys\n"
-        "from qd_service_control import main\n"
-        "main(['generate-edm', sys.argv[1], sys.argv[2]])\n"
+        "from qd_service_control.cli.generate_edm import main\n"
+        "main([sys.argv[1], sys.argv[2]])\n"
         "assert 'softioc' not in sys.modules\n"
         "assert 'aioca' not in sys.modules\n"
         "assert 'qd_service_control.ioc.app' not in sys.modules\n"

@@ -67,7 +67,7 @@ Group=qdctl
 SupplementaryGroups=systemd-journal
 Environment=PYTHONUNBUFFERED=1
 EnvironmentFile=/etc/xspress.d/epics.env
-ExecStart=/opt/qd-service-control/venv/bin/qd-service-control run /etc/xspress.d/qd-service-control.yaml
+ExecStart=/opt/qd-service-control/venv/bin/qd-service-control /etc/xspress.d/qd-service-control.yaml
 Restart=on-failure
 RestartSec=5
 [Install]
@@ -88,7 +88,7 @@ Generate it at build time from the same YAML, and install it as
 `/etc/polkit-1/rules.d/40-qd-service-control.rules`, mode 0644:
 
 ```bash
-qd-service-control generate-polkit qd-service-control.yaml --user qdctl \
+qd-generate-polkit qd-service-control.yaml --user qdctl \
     > 40-qd-service-control.rules
 ```
 
@@ -105,7 +105,7 @@ change it.
 ## 5. The EDM screen, generated at build time
 
 ```bash
-qd-service-control generate-edm qd-service-control.yaml <edl-dir>
+qd-generate-edm qd-service-control.yaml <edl-dir>
 ```
 
 Install the generated `.edl` files with the other QD screens (where

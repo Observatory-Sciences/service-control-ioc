@@ -8,7 +8,7 @@ Group=scdemo
 SupplementaryGroups=systemd-journal
 Environment=PYTHONUNBUFFERED=1
 EnvironmentFile=/etc/scdemo/ca.env
-ExecStart=/opt/qd-service-control/venv/bin/qd-service-control run /etc/scdemo/scdemo-sc.yaml
+ExecStart=/opt/qd-service-control/venv/bin/qd-service-control /etc/scdemo/scdemo-sc.yaml
 Restart=on-failure
 RestartSec=5
 [Install]

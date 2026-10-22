@@ -161,12 +161,12 @@ printf '%s\n' "# Installed by scdemo install.sh; overwritten on reinstall." \
 install -m 0644 -o root -g root "$tmp/ca.env" "$CONF/ca.env"
 
 # The EDM screens, generated from the same YAML.
-"$TOOL_VENV/bin/qd-service-control" generate-edm "$CONF/scdemo-sc.yaml" "$PREFIX/edm"
+"$TOOL_VENV/bin/qd-generate-edm" "$CONF/scdemo-sc.yaml" "$PREFIX/edm"
 chmod -R a+rX "$PREFIX/edm"
 
 # The polkit rule, generated from the same YAML, lets the service user start, stop and
 # restart exactly the stack's units. polkitd reloads it when it changes.
-"$TOOL_VENV/bin/qd-service-control" generate-polkit "$CONF/scdemo-sc.yaml" \
+"$TOOL_VENV/bin/qd-generate-polkit" "$CONF/scdemo-sc.yaml" \
     --user "$SVC_USER" > "$tmp/40-scdemo-sc.rules"
 install -m 0644 -o root -g root "$tmp/40-scdemo-sc.rules" "$RULE"
 

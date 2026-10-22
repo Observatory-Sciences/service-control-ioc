@@ -25,10 +25,11 @@ TOOL_UNIT: Final = "qdsc-dev"
 SC_UNIT: Final = "scdemo-sc.service"
 CA_ENV: Final = "/etc/scdemo/ca.env"
 CA_PYTHON: Final = "/opt/scdemo/ca-venv/bin/python"
-TOOL_BIN: Final = "/opt/qd-service-control/venv/bin/qd-service-control"
+TOOL_BIN_DIR: Final = "/opt/qd-service-control/venv/bin"
+TOOL_BIN: Final = f"{TOOL_BIN_DIR}/qd-service-control"
 CONFIG: Final = "/etc/scdemo/scdemo-sc.yaml"
 RULE: Final = "/etc/polkit-1/rules.d/40-scdemo-sc.rules"
-TOOL_CMD: Final = f"{TOOL_BIN} run {CONFIG} --log-format json"
+TOOL_CMD: Final = f"{TOOL_BIN} {CONFIG} --log-format json"
 STACK_UNITS: Final = (
     "scdemo-all.service",
     "scdemo-controller.service",
@@ -254,7 +255,7 @@ class Host:
         before = len(self._polkit_loads())
         self.sh(
             "set -e\n"
-            f"{TOOL_BIN} generate-polkit {CONFIG} --user {self.user}"
+            f"{TOOL_BIN_DIR}/qd-generate-polkit {CONFIG} --user {self.user}"
             " > /root/40-scdemo-sc.rules\n"
             f"install -m 0644 /root/40-scdemo-sc.rules {RULE}"
         )
