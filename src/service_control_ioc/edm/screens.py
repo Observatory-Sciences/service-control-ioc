@@ -123,12 +123,13 @@ def _detail(spec: StackSpec, names: PvNames, sid: str) -> str:
 
 
 def edges_screen(spec: StackSpec, names: PvNames, name: str, budget: Size) -> str:
-    """Every edge: LED, description, detail and since, in columns of
-    ``budget.h`` rows. Raises ``ValueError`` if the columns need more than
-    ``budget.w``.
+    """Every edge: LED, description, detail and since, in as few columns as
+    ``budget.h`` allows, sharing the edges evenly. Raises ``ValueError`` if
+    the columns need more than ``budget.w``.
     """
-    rows = max(1, (budget.h - MARGIN - ROW - (ROW + 10) - MARGIN) // ROW)
-    columns = max(1, math.ceil(len(spec.edges) / rows))
+    most = max(1, (budget.h - MARGIN - ROW - (ROW + 10) - MARGIN) // ROW)
+    columns = max(1, math.ceil(len(spec.edges) / most))
+    rows = max(1, math.ceil(len(spec.edges) / columns))
     top = MARGIN + ROW
     objects = [edl.text(MARGIN, MARGIN, 200, TEXT_H, "Edges", bold=True)]
     for i, eid in enumerate(spec.edges):

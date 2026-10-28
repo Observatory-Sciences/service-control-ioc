@@ -271,6 +271,10 @@ def _screen_width(text: str) -> int:
     return int(re.search(r"^w (\d+)$", text, re.MULTILINE).group(1))  # ty: ignore[unresolved-attribute] - screen header always present
 
 
+def _screen_height(text: str) -> int:
+    return int(re.search(r"^h (\d+)$", text, re.MULTILINE).group(1))  # ty: ignore[unresolved-attribute] - screen header always present
+
+
 def test_edges_screen_lists_every_edge(spec: StackSpec, files: dict[str, str]) -> None:
     names = pv_names(spec)
     used = set(PV_LINE.findall(files[edges_file("scdemo")]))
@@ -289,8 +293,25 @@ def test_edges_screen_splits_into_columns(xspress: StackSpec) -> None:
     xs = {_geometry(text, pv)["x"] for pv in desc}
     assert len(xs) == 2
     assert max(xs) - min(xs) == 700
-    assert sum(_geometry(text, pv)["x"] == min(xs) for pv in desc) == 40
     assert _screen_width(text) <= DEFAULT_BUDGET.w
+
+
+def test_edges_screen_balances_its_columns(xspress: StackSpec) -> None:
+    """The columns share the edges evenly rather than the first filling the
+    budget's height (40 and 4 of the 44 Xspress edges), and the screen is
+    only as tall as the longest column."""
+    names = pv_names(xspress)
+    text = edges_screen(xspress, names, "x", DEFAULT_BUDGET)
+    xs = [
+        _geometry(text, names.pv(names.elements[eid], "DESC"))["x"]
+        for eid in xspress.edges
+    ]
+    assert sorted(xs.count(x) for x in set(xs)) == [22, 22]
+    ys = [
+        _geometry(text, names.pv(names.elements[eid], "DESC"))["y"]
+        for eid in xspress.edges
+    ]
+    assert _screen_height(text) < max(ys) + 4 * 24
 
 
 def test_budget_is_enforced(spec: StackSpec) -> None:
