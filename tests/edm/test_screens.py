@@ -7,7 +7,14 @@ import pytest
 from service_control_ioc.cli import generate_edm
 from service_control_ioc.config.load import load_config, load_config_text
 from service_control_ioc.config.spec import StackSpec
-from service_control_ioc.edm.screens import default_name, generate
+from service_control_ioc.edm.screens import (
+    DEFAULT_BUDGET,
+    Size,
+    default_name,
+    edges_file,
+    edges_screen,
+    generate,
+)
 from service_control_ioc.pvnames import pv_names
 
 REPO = Path(__file__).resolve().parents[2]
@@ -38,6 +45,7 @@ def test_default_name() -> None:
 def test_file_set(files: dict[str, str]) -> None:
     assert sorted(files) == [
         "scdemo-controller.edl",
+        "scdemo-edges.edl",
         "scdemo-relay.edl",
         "scdemo-sink1.edl",
         "scdemo-sink2.edl",
@@ -110,7 +118,7 @@ def test_generate_edm_cli_writes_files(
     generate_edm.main([str(SCDEMO), str(out)])
     printed = capsys.readouterr().out.split()
     written = sorted(p for p in out.iterdir())
-    assert len(written) == 5
+    assert len(written) == 6
     assert sorted(printed) == sorted(str(p) for p in written)
     assert (out / "scdemo-sc.edl").is_file()
 
@@ -202,3 +210,49 @@ def test_findings_wrap_over_three_lines(spec: StackSpec, files: dict[str, str]) 
     for base in names.services.values():
         detail = files[f"scdemo-{base.lower()}.edl"]
         assert _multiline_lines(detail, names.pv(base, "FINDING")) >= 3, base
+
+
+def _screen_width(text: str) -> int:
+    return int(re.search(r"^w (\d+)$", text, re.MULTILINE).group(1))  # ty: ignore[unresolved-attribute] - screen header always present
+
+
+def test_edges_screen_lists_every_edge(spec: StackSpec, files: dict[str, str]) -> None:
+    names = pv_names(spec)
+    used = set(PV_LINE.findall(files[edges_file("scdemo")]))
+    assert spec.edges
+    for eid in spec.edges:
+        base = names.elements[eid]
+        for field in ("DESC", "DETAIL", "SINCE"):
+            assert names.pv(base, field) in used, (eid, field)
+
+
+def test_edges_screen_splits_into_columns(xspress: StackSpec) -> None:
+    names = pv_names(xspress)
+    text = edges_screen(xspress, names, "x", DEFAULT_BUDGET)
+    desc = [names.pv(names.elements[eid], "DESC") for eid in xspress.edges]
+    assert len(desc) == 44
+    xs = {_geometry(text, pv)["x"] for pv in desc}
+    assert len(xs) == 2
+    assert max(xs) - min(xs) == 700
+    assert sum(_geometry(text, pv)["x"] == min(xs) for pv in desc) == 40
+    assert _screen_width(text) <= DEFAULT_BUDGET.w
+
+
+def test_budget_is_enforced(spec: StackSpec) -> None:
+    with pytest.raises(
+        ValueError, match=r"scdemo\.edl is \d+ x \d+ px, over the 600 x 400 px budget"
+    ):
+        generate(spec, "scdemo", budget=Size(600, 400))
+
+
+def test_edges_file_collides_with_detail_screen() -> None:
+    other = load_config_text(
+        """
+prefix: P
+top: a
+services:
+  a: {unit: a.service, pv: EDGES}
+"""
+    )
+    with pytest.raises(ValueError, match="same screen file"):
+        generate(other, "x")

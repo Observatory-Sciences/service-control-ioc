@@ -1,12 +1,29 @@
-"""The top screen and one detail screen per service, from a ``StackSpec``."""
+"""The top, edges and per-service detail screens, from a ``StackSpec``."""
 
+import math
 import re
-from typing import Final
+from collections.abc import Sequence
+from typing import Final, NamedTuple
 
 from service_control_ioc.config.spec import ServiceSpec, StackSpec
 from service_control_ioc.edm import edl
 from service_control_ioc.pvnames import PvNames, pv_names
 
+
+class Size(NamedTuple):
+    w: int
+    h: int
+
+
+class Link(NamedTuple):
+    """A button on the top screen that opens another screen."""
+
+    label: str
+    file: str
+
+
+# Every generated screen must fit this (``--max-size`` overrides it).
+DEFAULT_BUDGET: Final = Size(1900, 1040)
 WIDTH: Final = 900
 ROW: Final = 24
 _MARGIN: Final = 10
@@ -30,6 +47,15 @@ _CONTROLS: Final = (
     ("STOP", "Stop", 60),
     ("RESTART", "Restart", 70),
 )
+# The edges screen: LED, DESC, DETAIL and SINCE, a column every _EDGE_COLUMN px.
+_EDGE_COLUMN: Final = 700
+_EDGE_DESC_X: Final = _LED + 4
+_EDGE_DESC_W: Final = 330
+_EDGE_DETAIL_X: Final = _EDGE_DESC_X + _EDGE_DESC_W + 5
+_EDGE_DETAIL_W: Final = 200
+_EDGE_SINCE_X: Final = _EDGE_DETAIL_X + _EDGE_DETAIL_W + 5
+_EDGE_SINCE_W: Final = 130
+_EXIT_W: Final = 60
 _UNSAFE: Final = re.compile(r"[^a-z0-9_-]+")
 # A service row on the top screen: ACTIVE has room for "activating/start-post".
 _ACTIVE_X: Final = 260
@@ -44,8 +70,30 @@ def default_name(prefix: str) -> str:
     return _UNSAFE.sub("-", prefix.lower()).strip("-")
 
 
-def _file_stem(name: str, base: str) -> str:
-    return f"{name}-{_UNSAFE.sub('-', base.lower())}"
+def detail_file(name: str, base: str) -> str:
+    """The detail screen of the service with PV base ``base``."""
+    return f"{name}-{_UNSAFE.sub('-', base.lower())}.edl"
+
+
+def edges_file(name: str) -> str:
+    """The screen listing every edge."""
+    return f"{name}-edges.edl"
+
+
+def _check_size(file: str, size: Size, budget: Size) -> None:
+    if size.w > budget.w or size.h > budget.h:
+        raise ValueError(
+            f"{file} is {size.w} x {size.h} px, over the "
+            f"{budget.w} x {budget.h} px budget (--max-size)"
+        )
+
+
+def _screen_size(text: str) -> Size:
+    """The ``w`` and ``h`` in a screen's header (its first ``w`` and ``h``)."""
+    found = re.search(r"^w (\d+)\nh (\d+)$", text, re.MULTILINE)
+    if found is None:
+        raise ValueError("no screen size in the .edl text")
+    return Size(int(found.group(1)), int(found.group(2)))
 
 
 def _controls(names: PvNames, base: str, x: int, y: int) -> list[str]:
@@ -77,7 +125,7 @@ def _service_elements(service: ServiceSpec) -> tuple[str, ...]:
     return (*service.listeners, *service.files)
 
 
-def _top(spec: StackSpec, names: PvNames, name: str) -> str:
+def _top(spec: StackSpec, names: PvNames, name: str, links: Sequence[Link]) -> str:
     objects: list[str] = []
     y = _MARGIN
     objects.append(edl.text(_MARGIN, y, 130, _TEXT_H, spec.prefix, bold=True))
@@ -123,7 +171,7 @@ def _top(spec: StackSpec, names: PvNames, name: str) -> str:
                 70,
                 _TEXT_H,
                 "Details",
-                _file_stem(name, base) + ".edl",
+                detail_file(name, base),
             )
         )
         y += ROW
@@ -131,7 +179,8 @@ def _top(spec: StackSpec, names: PvNames, name: str) -> str:
             objects += _element_row(names, eid, y, 30)
             y += ROW
     y += 8
-    objects.append(edl.text(_MARGIN, y, 200, _TEXT_H, "Edges", bold=True))
+    objects.append(edl.text(_MARGIN, y, 55, _TEXT_H, "Edges", bold=True))
+    objects.append(edl.related(70, y, 100, _TEXT_H, "All edges", edges_file(name)))
     y += ROW
     for eid in spec.edges:
         base = names.elements[eid]
@@ -207,17 +256,69 @@ def _detail(spec: StackSpec, names: PvNames, sid: str) -> str:
     return edl.screen(WIDTH, y + ROW + _MARGIN, f"{sid} - {spec.prefix}", objects)
 
 
-def generate(spec: StackSpec, name: str) -> dict[str, str]:
-    """File name -> ``.edl`` text: the top screen and a detail screen per service.
+def edges_screen(spec: StackSpec, names: PvNames, name: str, budget: Size) -> str:
+    """Every edge: LED, description, detail and since, in columns of
+    ``budget.h`` rows. Raises ``ValueError`` if the columns need more than
+    ``budget.w``.
+    """
+    rows = max(1, (budget.h - _MARGIN - ROW - (ROW + 10) - _MARGIN) // ROW)
+    columns = max(1, math.ceil(len(spec.edges) / rows))
+    top = _MARGIN + ROW
+    objects = [edl.text(_MARGIN, _MARGIN, 200, _TEXT_H, "Edges", bold=True)]
+    for i, eid in enumerate(spec.edges):
+        base = names.elements[eid]
+        x = _MARGIN + (i // rows) * _EDGE_COLUMN
+        y = top + (i % rows) * ROW
+        objects.append(
+            edl.led(x, y + 2, _LED, _LED, names.pv(base, "STATE"), edl.STATE_COLOURS)
+        )
+        for field, dx, w in (
+            ("DESC", _EDGE_DESC_X, _EDGE_DESC_W),
+            ("DETAIL", _EDGE_DETAIL_X, _EDGE_DETAIL_W),
+            ("SINCE", _EDGE_SINCE_X, _EDGE_SINCE_W),
+        ):
+            objects.append(edl.update(x + dx, y, w, _TEXT_H, names.pv(base, field)))
+    width = _MARGIN + (columns - 1) * _EDGE_COLUMN + _EDGE_SINCE_X + _EDGE_SINCE_W
+    width += _MARGIN
+    y = top + min(len(spec.edges), rows) * ROW + 10
+    objects.append(edl.exit_button(width - _MARGIN - _EXIT_W, y))
+    size = Size(width, y + ROW + _MARGIN)
+    _check_size(edges_file(name), size, budget)
+    return edl.screen(size.w, size.h, f"Edges - {spec.prefix}", objects)
 
-    Raises ``ValueError`` if two services would write the same file (bases
-    that differ only in case or in ``_`` versus ``-``).
+
+def generate(
+    spec: StackSpec,
+    name: str,
+    *,
+    budget: Size = DEFAULT_BUDGET,
+    links: Sequence[Link] = (),
+) -> dict[str, str]:
+    """File name -> ``.edl`` text: the top screen, the edges screen and a
+    detail screen per service.
+
+    Raises ``ValueError`` if two services, or a service and the edges screen,
+    would write the same file (bases that differ only in case or in ``_``
+    versus ``-``), or if a screen is bigger than ``budget``.
     """
     names = pv_names(spec)
-    files = {f"{name}.edl": _top(spec, names, name)}
+    files: dict[str, str] = {}
+
+    def add(file_name: str, text: str) -> None:
+        _check_size(file_name, _screen_size(text), budget)
+        files[file_name] = text
+
+    add(f"{name}.edl", _top(spec, names, name, links))
+    add(edges_file(name), edges_screen(spec, names, name, budget))
     owners: dict[str, str] = {}
     for sid, base in names.services.items():
-        file_name = f"{_file_stem(name, base)}.edl"
+        file_name = detail_file(name, base)
+        if file_name == edges_file(name):
+            raise ValueError(
+                f"service {sid!r} (PV base {base!r}) maps to {file_name!r}, "
+                "the same screen file as the edges screen; give it a PV base "
+                "other than 'edges'"
+            )
         if file_name in owners:
             raise ValueError(
                 f"services {owners[file_name]!r} and {sid!r} (PV bases "
@@ -226,5 +327,5 @@ def generate(spec: StackSpec, name: str) -> dict[str, str]:
                 "differ by more than case or '_' versus '-'"
             )
         owners[file_name] = sid
-        files[file_name] = _detail(spec, names, sid)
+        add(file_name, _detail(spec, names, sid))
     return files
