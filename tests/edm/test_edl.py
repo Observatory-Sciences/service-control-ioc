@@ -12,6 +12,36 @@ def test_led_has_one_rectangle_per_state() -> None:
     assert text.count('visPv "P:STATE"') == 5
 
 
+def test_line_has_one_polyline_per_state() -> None:
+    text = edl.line(
+        [(10, 20), (10, 60), (90, 60)],
+        "P:STATE",
+        edl.STATE_COLOURS,
+        dashed=True,
+        arrow=True,
+    )
+    assert text.count("object activeLineClass") == 5
+    assert re.findall(r'^visMin "(\d)"$', text, re.MULTILINE) == list("01234")
+    assert text.count("numPoints 3") == 5
+    assert "  2 90\n" in text
+    assert "  2 60\n" in text
+    assert re.findall(r"^[xywh] (\d+)$", text, re.MULTILINE)[:4] == [
+        "10",
+        "20",
+        "80",
+        "40",
+    ]
+    assert text.count('lineStyle "dash"') == 5
+    assert text.count('arrows "to"') == 5
+
+
+def test_line_defaults_are_solid_without_arrow() -> None:
+    text = edl.line([(0, 5), (50, 5)], "P:STATE", edl.STATE_COLOURS)
+    assert "lineStyle" not in text
+    assert "arrows" not in text
+    assert re.findall(r"^h (\d+)$", text, re.MULTILINE)[0] == "1"
+
+
 def test_colour_tables_cover_every_state() -> None:
     assert sorted(edl.STATE_COLOURS) == list(range(len(ELEMENT_STATES)))
     assert sorted(edl.OVERALL_COLOURS) == list(range(len(OVERALL_STATES)))
