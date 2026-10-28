@@ -22,6 +22,12 @@ def _stack(ioc, field: str) -> str:
     return ioc.pv("", field)
 
 
+async def _lastjob(ioc, pv: str, text: str) -> None:
+    """Wait for ``pv`` to read ``text``. The control runs after the caput
+    returns, and sets LASTJOB before it resets the control record to 0."""
+    await ioc.wait_for(pv, lambda v: v == text)
+
+
 @pytest.mark.asyncio
 async def test_every_pv_name_is_served(ioc) -> None:
     names = list(ioc.names.all())
@@ -78,16 +84,16 @@ async def test_fault_view_severity_major(ioc) -> None:
 async def test_restart_pv_calls_control_and_resets(ioc) -> None:
     await caput(_svc(ioc, "relay", "RESTART"), 1, wait=True, timeout=10)
     assert await ioc.next_control() == ["relay", "restart"]
+    await _lastjob(ioc, _svc(ioc, "relay", "LASTJOB"), "restart: done")
     assert await caget(_svc(ioc, "relay", "RESTART")) == 0
-    assert await caget(_svc(ioc, "relay", "LASTJOB")) == "restart: done"
 
 
 @pytest.mark.asyncio
 async def test_stack_start_targets_stack(ioc) -> None:
     await caput(_stack(ioc, "START"), 1, wait=True, timeout=10)
     assert await ioc.next_control() == ["stack", "start"]
+    await _lastjob(ioc, _stack(ioc, "LASTJOB"), "start: done")
     assert await caget(_stack(ioc, "START")) == 0
-    assert await caget(_stack(ioc, "LASTJOB")) == "start: done"
 
 
 @pytest.mark.asyncio
@@ -95,7 +101,7 @@ async def test_group_stop_targets_group(ioc) -> None:
     group = ioc.names.groups["all"]
     await caput(ioc.pv(group, "STOP"), 1, wait=True, timeout=10)
     assert await ioc.next_control() == ["all", "stop"]
-    assert await caget(ioc.pv(group, "LASTJOB")) == "stop: done"
+    await _lastjob(ioc, ioc.pv(group, "LASTJOB"), "stop: done")
 
 
 @pytest.mark.asyncio
@@ -104,7 +110,7 @@ async def test_write_of_zero_does_nothing(ioc) -> None:
     await caput(_svc(ioc, "relay", "STOP"), 1, wait=True, timeout=10)
     # The first control call is the STOP: the zero write made none.
     assert await ioc.next_control() == ["relay", "stop"]
-    assert await caget(_svc(ioc, "relay", "LASTJOB")) == "stop: done"
+    await _lastjob(ioc, _svc(ioc, "relay", "LASTJOB"), "stop: done")
 
 
 @pytest.mark.asyncio
@@ -112,13 +118,13 @@ async def test_control_that_raises_still_completes(ioc) -> None:
     await ioc.send({"control_raises": True})
     await caput(_svc(ioc, "sink@1", "RESTART"), 1, wait=True, timeout=10)
     assert await ioc.next_control() == ["sink@1", "restart"]
+    await _lastjob(ioc, _svc(ioc, "sink@1", "LASTJOB"), "restart: error")
     assert await caget(_svc(ioc, "sink@1", "RESTART")) == 0
-    assert await caget(_svc(ioc, "sink@1", "LASTJOB")) == "restart: error"
     # The record is usable again afterwards.
     await ioc.send({"control_raises": False})
     await caput(_svc(ioc, "sink@1", "RESTART"), 1, wait=True, timeout=10)
     assert await ioc.next_control() == ["sink@1", "restart"]
-    assert await caget(_svc(ioc, "sink@1", "LASTJOB")) == "restart: done"
+    await _lastjob(ioc, _svc(ioc, "sink@1", "LASTJOB"), "restart: done")
 
 
 @pytest.mark.asyncio
