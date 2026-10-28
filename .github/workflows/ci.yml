@@ -22,7 +22,7 @@ jobs:
           persist-credentials: false
 
       # Python version comes from .python-version (3.11, as on EL9).
-      - uses: astral-sh/setup-uv@v10
+      - uses: astral-sh/setup-uv@v10.3.2
         with:
           enable-cache: true
 
