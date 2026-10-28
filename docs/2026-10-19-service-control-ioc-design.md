@@ -375,17 +375,36 @@ Generated from the same YAML by a subcommand of the tool, for example
 so it keeps the spirit of D11. It generates:
 
 - a top screen with the overall indicator, the stack controls, a fault
-  message, and one row per service: state, active state, restarts, CPU,
-  and controls. Each listener and edge row sits under its owning service,
-  or in an edges section;
+  message and an instance grid (below). `--link 'LABEL=FILE.edl'` adds a
+  button to its header for each screen the build draws by other means;
+- an "All edges" screen (`<name>-edges.edl`) that lists every edge with
+  `DESC`, `DETAIL` and `SINCE`, in columns;
 - a per-service detail screen (the journal tail, exit status, findings),
   opened from the row.
 
+The grid has one row per service template and one column per instance
+number. A service without instances gets one full-width row. Each service's
+listener and file rows sit under it, folded the same way. Every group gets a
+row, the stack group included. The edges are on the right: one row per edge
+entry in the YAML, with an LED for each instance, then the events pane. The
+grid has no hosts section, because listeners on hosts have no PVs. Their
+state shows through the edges to them.
+
+A full cell is 300 px wide and holds the LED, the state, the CPU, Start,
+Stop and Restart buttons and a `...` button for the detail screen. When the
+full cells don't fit, the top screen uses compact cells of 120 px (the LED,
+the state and `...`), and the controls are one click away on the detail
+screen. The generator fails if even compact cells don't fit, or if there are
+more than 10 instance columns (the edge rows have 10 LED slots).
+
 The journal tail and events panes (EDM `multiLineTextUpdate`) are tall
 enough for a whole 20-line ring (plan 4, Task 5; the texts themselves are
-capped at 999 bytes, Section 6.5). The scdemo test stack's screens fit a
-1600x1200 display; the generator does not bound the size, so a stack with
-more services or elements gets taller screens.
+capped at 999 bytes, Section 6.5).
+
+Every screen must fit a size budget, 1900 x 1040 px by default and
+`--max-size WxH` to change it. A screen over the budget is an error (exit
+code 2), not a bigger screen: the fix is a larger budget, or fewer or
+shorter rows. The scdemo test stack's screens fit it with room to spare.
 
 The builder chooses how the generator is driven (templates or code), and
 the layout. It must run on macOS and on EL9, without EDM installed, and its

@@ -112,6 +112,84 @@ Install the generated `.edl` files with the other QD screens (where
 `qd-epics-ioc.spec` installs `ODNProcServ.edl` today) and link the overview
 from the main Xspress screen.
 
+### Size budget
+
+Every screen must fit 1900 x 1040 px, which the generator checks. Pass
+`--max-size WxH` for a different display. A screen over the budget is an
+error (exit code 2) naming the file and its size.
+
+### Extra screens
+
+A screen the generator can't draw, such as a wiring diagram, is a separate
+`.edl` file that a script writes next to the generated ones. Add a button for
+it to the top screen's header with `--link`, once for each screen:
+
+```bash
+service-control-generate-edm service-control-ioc.yaml <edl-dir> \
+    --link 'Wiring=xspress-sc-wiring.edl'
+```
+
+`LABEL` is the button's text. `FILE.edl` is a file name in the same
+directory as the top screen, not a path. Too many links for the header's
+width is an error.
+
+The script can use the generator's own building blocks, so it draws with the
+same objects and PV names. The public API is:
+
+- `service_control_ioc.pvnames.pv_names(spec)` returns a `PvNames`. Its
+  `pv(base, field)` gives the full PV name, and `services`, `elements` and
+  `groups` map a YAML id to its base. An empty `base` is the stack level.
+- `service_control_ioc.edm.edl` has one function for each EDM object, each
+  returning the object's `.edl` text: `screen`, `text`, `update`,
+  `multiline`, `button`, `related`, `led`, `line` and `exit_button`. Also
+  `STATE_COLOURS` and `OVERALL_COLOURS`, the colours for an element or
+  service state and for the overall state.
+- `line(points, pv, colours, *, width=2, dashed=False, arrow=False)` draws
+  a polyline through `points` (a list of `(x, y)`) that takes the colour for
+  the state in `pv`, for example an edge's `STATE` with `STATE_COLOURS`.
+  Use it for the wires of a diagram. `arrow=True` puts an arrowhead on the
+  last point.
+- `service_control_ioc.edm.screens` has `default_name(prefix)`, the screen
+  name the CLI uses when `--name` isn't given. It also has
+  `detail_file(name, base)` and `edges_file(name)`, the file names of a
+  service's detail screen and of the "All edges" screen, to use as the
+  target of `edl.related`. `Size`, `Link`, `DEFAULT_BUDGET`, `generate` and
+  `edges_screen` are there too.
+
+For example, a button for every service that opens its detail screen, and
+a wire that follows an edge's state:
+
+```python
+from pathlib import Path
+
+from service_control_ioc.config.load import load_config
+from service_control_ioc.edm import edl
+from service_control_ioc.edm.screens import default_name, detail_file
+from service_control_ioc.pvnames import pv_names
+
+spec = load_config(Path("service-control-ioc.yaml"))
+names = pv_names(spec)
+name = default_name(spec.prefix)
+objects = [
+    edl.related(10, 10 + 24 * i, 120, 20, sid, detail_file(name, base))
+    for i, (sid, base) in enumerate(names.services.items())
+]
+edge = names.elements[next(iter(spec.edges))]  # the first edge
+objects.append(
+    edl.line(
+        [(140, 20), (300, 20)],
+        names.pv(edge, "STATE"),
+        edl.STATE_COLOURS,
+        arrow=True,
+    )
+)
+Path("extra.edl").write_text(edl.screen(320, 300, "Extra", objects))
+```
+
+[qd-rpm-build#62](https://github.com/Observatory-Sciences/qd-rpm-build/issues/62)
+is the first user: a hand-designed Xspress wiring diagram, linked with
+`--link 'Wiring=xspress-sc-wiring.edl'`.
+
 ## 6. Retire procServControl
 
 Once the tool is packaged and proven on the test VM:
