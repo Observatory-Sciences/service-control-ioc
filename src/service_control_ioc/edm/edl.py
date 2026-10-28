@@ -147,6 +147,47 @@ def led(x: int, y: int, w: int, h: int, pv: str, colours: Mapping[int, Rgb]) -> 
     return "\n".join(rectangles)
 
 
+def line(
+    points: Sequence[tuple[int, int]],
+    pv: str,
+    colours: Mapping[int, Rgb],
+    *,
+    width: int = 2,
+    dashed: bool = False,
+    arrow: bool = False,
+) -> str:
+    """One polyline per state index, each visible only while ``pv`` is in it.
+
+    ``x``, ``y``, ``w`` and ``h`` are the bounding box of ``points``, at
+    least 1 wide and high so that a straight horizontal or vertical line
+    keeps a non-empty box. ``arrow`` puts an arrowhead on the last point.
+    """
+    xs = [x for x, _ in points]
+    ys = [y for _, y in points]
+    left, top = min(xs), min(ys)
+    w, h = max(max(xs) - left, 1), max(max(ys) - top, 1)
+    x_points = "".join(f"  {i} {x}\n" for i, x in enumerate(xs))
+    y_points = "".join(f"  {i} {y}\n" for i, y in enumerate(ys))
+    polylines = []
+    for index, colour in sorted(colours.items()):
+        body = f"lineColor {_rgb(colour)}\nfillColor {_rgb(colour)}\n"
+        if width != 1:
+            body += f"lineWidth {width}\n"
+        if dashed:
+            body += 'lineStyle "dash"\n'
+        body += f'visPv {_quote(pv)}\nvisMin "{index}"\nvisMax "{index + 1}"\n'
+        if arrow:
+            body += 'arrows "to"\n'
+        body += (
+            f"numPoints {len(points)}\nxPoints {{\n{x_points}}}\n"
+            f"yPoints {{\n{y_points}}}\n"
+        )
+        polylines.append(
+            _object("Lines", "activeLineClass", (4, 0, 1), left, top, w, h, body)
+        )
+    return "\n".join(polylines)
+
+
 def exit_button(x: int, y: int) -> str:
     body = (
         "fgColor index 46\nbgColor index 3\ntopShadowColor index 1\n"

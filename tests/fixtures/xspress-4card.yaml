@@ -1,0 +1,110 @@
+# Copied from Observatory-Sciences/qd-rpm-build@df4de89 (4 cards).
+# service-control-ioc configuration (/etc/xspress.d/service-control-ioc.yaml),
+# read by qd-xspress-service-control.service. Generated with the polkit rule
+# and the EDM screens by scripts/generate-service-control-configs.sh (in
+# QD-rpm-build) and installed by qd-epics-ioc. An upgrade replaces it; a
+# locally edited copy is kept as .rpmsave. After an edit here (detector
+# address, flags) regenerate the polkit rule and restart the unit (see
+# docs/deployment-engineer.md).
+#
+# The ports are declared here as the intended wiring; they are not read from
+# the services' own configs, so a config that drifted shows up as a missing
+# listener or edge. They are the port table and connection map of
+# docs/deployment-engineer.md (scripts/qd-check-connections.sh has the same
+# edges). The unit instances are numbered 1..N, the port formulas count from
+# card 0, hence "n - 1".
+
+prefix: XSPRESS:SC
+# The xspress IOC starts last, so "post" timeouts count from when it is active.
+top: xspress_ioc
+stack_group: qd-xspress-all
+
+# hardware: false for a host without a detector. xspressControl then neither
+# connects to the cards nor binds the DAQ ports, so those edges are left out.
+flags: {hardware: true}
+
+services:
+  frame_receiver:
+    unit: "qd-frame-receiver@{n}.service"
+    pv: "FR{n}"
+    instances: {from: 1, to: 4}
+    listeners:
+      control:       {proto: tcp, port: "10000 + 10 * (n - 1)"}
+      frame_ready:   {proto: tcp, port: "10001 + 10 * (n - 1)", address: 127.0.0.1}
+      frame_release: {proto: tcp, port: "10002 + 10 * (n - 1)", address: 127.0.0.1}
+  frame_processor:
+    unit: "qd-frame-processor@{n}.service"
+    pv: "FP{n}"
+    instances: {from: 1, to: 4}
+    listeners:
+      control:  {proto: tcp, port: "10004 + 10 * (n - 1)"}
+      meta:     {proto: tcp, port: "10008 + 10 * (n - 1)"}
+      liveview: {proto: tcp, port: "15500 + (n - 1)"}
+  xspress_control:
+    unit: qd-xspress-control.service
+    pv: XCTRL
+    listeners:
+      control: {proto: tcp, port: 12000, address: 127.0.0.1}
+      # Bound only once xspressControl is connected to the cards.
+      daq:
+        proto: tcp
+        port: "15150 + (n - 1)"
+        instances: {from: 1, to: 4}
+        phase: post
+        when: hardware
+  meta_writer:
+    unit: qd-xspress-meta-writer.service
+    pv: META
+    listeners:
+      meta: {proto: tcp, port: 5659}
+  live_view_merge:
+    unit: qd-xspress-live-view-merge.service
+    pv: LVM
+    listeners:
+      pub: {proto: tcp, port: 15550}
+  odin_control:
+    unit: qd-xspress-odin-control.service
+    pv: ODIN
+    listeners:
+      http: {proto: tcp, port: 8888}
+  xspress_ioc:
+    unit: qd-xspress-ioc.service
+    pv: IOC
+    listeners:
+      console: {proto: tcp, port: 4005, address: 127.0.0.1}
+
+hosts:
+  # The detector cards: card 1 at 192.168.0.2, card n at 192.168.0.(n + 1).
+  # Change the address here if the cards are elsewhere.
+  card:
+    address: "192.168.0.{n + 1}"
+    instances: {from: 1, to: 4}
+    when: hardware
+    listeners:
+      p30124: {proto: tcp, port: 30124}
+      p30126: {proto: tcp, port: 30126}
+      p30127: {proto: tcp, port: 30127}
+
+edges:
+  - {client: odin_control, server: frame_receiver.control}
+  - {client: odin_control, server: frame_processor.control}
+  - {client: frame_processor, server: frame_receiver.frame_ready}
+  - {client: frame_processor, server: frame_receiver.frame_release}
+  - {client: meta_writer, server: frame_processor.meta}
+  - {client: live_view_merge, server: frame_processor.liveview}
+  - {client: odin_control, server: xspress_control.control}
+  - {client: odin_control, server: meta_writer.meta}
+  - {client: xspress_ioc, server: odin_control.http}
+  - {client: xspress_ioc, server: live_view_merge.pub}
+  # Hardware: xspressControl connects to every card once it is configured, and
+  # each Frame Receiver reads its card's data from xspressControl.
+  - {client: xspress_control, server: card.p30124, phase: post, when: hardware}
+  - {client: xspress_control, server: card.p30126, phase: post, when: hardware}
+  - {client: xspress_control, server: card.p30127, phase: post, when: hardware}
+  - {client: frame_receiver, server: xspress_control.daq, phase: post, when: hardware}
+
+groups:
+  qd-xspress-all:
+    unit: qd-xspress-all.service
+    members: [frame_receiver, frame_processor, xspress_control, meta_writer,
+              live_view_merge, odin_control, xspress_ioc]

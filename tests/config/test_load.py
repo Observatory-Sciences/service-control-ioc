@@ -535,3 +535,45 @@ def test_group_id_stack_is_an_issue():
 def test_poll_settings_must_be_positive(key: str, value: float) -> None:
     issues = issues_of(HEAD + f"defaults: {{{key}: {value}}}\n" + SVC)
     assert f"defaults.{key}" in issues
+
+
+def test_listener_instance_from_owner_or_itself():
+    spec = load_config_text(PAIRED_YAML)
+    assert spec.listeners["fr@2.ctrl"].instance == 2
+    assert spec.listeners["xc.daq@1"].instance == 1
+
+
+def test_edge_template_and_instance():
+    spec = load_config_text(PAIRED_YAML)
+    assert spec.edges["fp@2 -> fr@2.ctrl"].template == 0
+    assert spec.edges["fp@2 -> fr@2.ctrl"].instance == 2
+    assert spec.edges["fr@1 -> xc.daq@1"].template == 1
+    assert spec.edges["fr@1 -> xc.daq@1"].instance == 1
+
+
+def test_uninstanced_listener_and_edge_have_no_instance():
+    spec = load_config_text(SCDEMO.read_text())
+    assert spec.edges["controller -> relay.rep"].instance is None
+    assert spec.listeners["relay.rep"].instance is None
+
+
+def test_edge_template_index_survives_dropped_entries():
+    text = (
+        HEAD
+        + """
+flags: {hardware: false}
+services:
+  svc:
+    unit: s.service
+    listeners:
+      a: {proto: tcp, port: 5001}
+      b: {proto: tcp, port: 5002}
+      c: {proto: tcp, port: 5003}
+edges:
+  - {client: svc, server: svc.a}
+  - {client: svc, server: svc.b, when: hardware}
+  - {client: svc, server: svc.c}
+"""
+    )
+    spec = load_config_text(text)
+    assert {e.template for e in spec.edges.values()} == {0, 2}

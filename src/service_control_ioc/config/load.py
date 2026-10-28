@@ -415,6 +415,7 @@ class _Expander:
                 spec = ListenerSpec(
                     id=lid,
                     owner=owner,
+                    instance=n,
                     name=name,
                     proto=raw.proto,
                     port=port,
@@ -482,6 +483,8 @@ class _Expander:
             edge = EdgeSpec(
                 id=f"{cid} -> {lid}",
                 client=cid,
+                template=index,
+                instance=n,
                 client_is_host=client.kind == "hosts",
                 server=lid,
                 proto=linfo.proto,

@@ -28,6 +28,7 @@ class Defaults:
 class ListenerSpec:
     id: str
     owner: str
+    instance: int | None
     name: str
     proto: Proto
     port: int
@@ -75,6 +76,8 @@ class HostSpec:
 class EdgeSpec:
     id: str
     client: str
+    template: int
+    instance: int | None
     client_is_host: bool
     server: str
     proto: Proto
