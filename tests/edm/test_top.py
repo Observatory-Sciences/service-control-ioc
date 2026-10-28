@@ -5,7 +5,7 @@ import pytest
 
 from service_control_ioc.config.load import load_config, load_config_text
 from service_control_ioc.config.spec import StackSpec
-from service_control_ioc.edm.screens import Link, generate
+from service_control_ioc.edm.screens import Link, Size, generate
 from service_control_ioc.pvnames import pv_names
 
 REPO = Path(__file__).resolve().parents[2]
@@ -105,6 +105,13 @@ def test_too_many_instances_is_an_error() -> None:
         generate(load_config_text(_instanced(list(range(1, 12)))), "x")
 
 
+def test_more_columns_than_edge_led_slots_is_an_error() -> None:
+    # Wide enough for 11 compact cells, but an edge row has 10 LED slots.
+    spec = load_config_text(_instanced(list(range(1, 12))))
+    with pytest.raises(ValueError, match="11 instance columns .* 10 edge LED"):
+        generate(spec, "x", budget=Size(2100, 1040))
+
+
 def test_sparse_instances_head_their_columns() -> None:
     texts = _texts(generate(load_config_text(_instanced([3, 5])), "x")["x.edl"])
     assert "3" in texts
@@ -136,10 +143,13 @@ def test_generated_files_are_ascii(xspress: StackSpec) -> None:
     assert all(t.isascii() for t in generate(xspress, "x").values())
 
 
-def test_groups_other_than_the_stack_group_get_rows() -> None:
+def test_every_group_gets_a_row() -> None:
+    """The stack group too: its PVs are on no other screen."""
     spec = load_config_text(_GROUPS)
-    top = generate(spec, "x")["x.edl"]
+    top = pvs(generate(spec, "x")["x.edl"])
     names = pv_names(spec)
-    assert "Groups" in _texts(top)
-    assert names.pv(names.groups["pair"], "RESTART") in pvs(top)
-    assert names.pv(names.groups["all"], "RESTART") not in pvs(top)
+    for gid in ("all", "pair"):
+        base = names.groups[gid]
+        assert top.count(names.pv(base, "STATE")) == 6, gid  # LED + STATE update
+        for field in ("START", "STOP", "RESTART"):
+            assert names.pv(base, field) in top, (gid, field)

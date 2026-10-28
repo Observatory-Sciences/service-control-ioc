@@ -82,6 +82,8 @@ _ALL_EDGES_W: Final = 100
 _EDGE_LABEL_W: Final = 290
 _EDGE_LEDS_X: Final = 300
 _EDGE_LED_STEP: Final = 22
+# An edge row has an LED slot per instance column, within the right column.
+_EDGE_SLOTS: Final = (_RIGHT_W - _EDGE_LEDS_X - LED) // _EDGE_LED_STEP + 1
 
 
 class _ServiceCell(NamedTuple):
@@ -151,13 +153,24 @@ def _width(area: int) -> int:
 
 
 def _grid(spec: StackSpec, budget: Size) -> _Grid:
-    """Full cells if they fit ``budget.w``, else compact ones."""
+    """Full cells if they fit ``budget.w``, else compact ones.
+
+    Raises ``ValueError`` if neither fits, or if there are more columns than
+    an edge row has LED slots.
+    """
     columns = instance_columns(spec)
     for cell in (_FULL_CELL, _COMPACT_CELL):
         grid = _Grid(columns, cell)
         if _width(grid.area) <= budget.w:
-            return grid
-    raise ValueError(f"{len(columns)} instance columns do not fit {budget.w} px")
+            break
+    else:
+        raise ValueError(f"{len(columns)} instance columns do not fit {budget.w} px")
+    if len(columns) > _EDGE_SLOTS:
+        raise ValueError(
+            f"{len(columns)} instance columns do not fit the {_EDGE_SLOTS} edge "
+            "LED slots of an edge row"
+        )
+    return grid
 
 
 def top_screen(
@@ -239,12 +252,12 @@ def _left(
         for row in family.rows:
             objects += _element_row(spec, names, grid, row, y)
             y += ROW
-    groups = [gid for gid in spec.groups if gid != spec.stack_group]
-    if groups:
+    # Every group, the stack group too: no other screen shows its PVs.
+    if spec.groups:
         y += GAP
         objects.append(edl.text(MARGIN, y, _SECTION_W, TEXT_H, "Groups", bold=True))
         y += ROW
-        for gid in groups:
+        for gid in spec.groups:
             base = names.groups[gid]
             objects.append(edl.text(MARGIN, y, _PREFIX_W, TEXT_H, gid, bold=True))
             objects += led_state(names, base, _GROUP_STATE_X, y)
