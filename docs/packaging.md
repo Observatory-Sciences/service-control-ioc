@@ -151,9 +151,9 @@ same objects and PV names. The public API is:
   last point.
 - `service_control_ioc.edm.screens` has `default_name(prefix)`, the screen
   name the CLI uses when `--name` isn't given. It also has
-  `detail_file(name, base)` and `edges_file(name)`, the file names of a
-  service's detail screen and of the "All edges" screen, to use as the
-  target of `edl.related`. `Size`, `Link`, `DEFAULT_BUDGET`, `generate` and
+  `top_file(name)`, `detail_file(name, base)` and `edges_file(name)`, the
+  file names of the top screen, of a service's detail screen and of the
+  "All edges" screen, to use as the target of `edl.related`. `Size`, `Link`, `DEFAULT_BUDGET`, `generate` and
   `edges_screen` are there too.
 
 For example, a button for every service that opens its detail screen, and

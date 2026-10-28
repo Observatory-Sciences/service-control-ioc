@@ -51,6 +51,11 @@ def default_name(prefix: str) -> str:
     return _UNSAFE.sub("-", prefix.lower()).strip("-")
 
 
+def top_file(name: str) -> str:
+    """The top screen."""
+    return f"{name}.edl"
+
+
 def detail_file(name: str, base: str) -> str:
     """The detail screen of the service with PV base ``base``."""
     return f"{name}-{_UNSAFE.sub('-', base.lower())}.edl"

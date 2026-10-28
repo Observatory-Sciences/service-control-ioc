@@ -40,6 +40,10 @@ def parse_link(text: str) -> Link:
         raise argparse.ArgumentTypeError(
             f"{file!r} must be a .edl file name in the same directory"
         )
+    if not (label + file).isascii():
+        raise argparse.ArgumentTypeError(
+            f"{text!r}: the label and file name must be ASCII (EDM's X fonts)"
+        )
     return Link(label, file)
 
 

@@ -23,6 +23,7 @@ from service_control_ioc.edm.layout import (
     detail_file,
     edges_file,
     led_state,
+    top_file,
 )
 from service_control_ioc.edm.top import top_screen
 from service_control_ioc.pvnames import PvNames, pv_names
@@ -37,6 +38,7 @@ __all__ = [
     "edges_file",
     "edges_screen",
     "generate",
+    "top_file",
 ]
 
 WIDTH: Final = 900  # a detail screen
@@ -66,10 +68,10 @@ def _screen_size(text: str) -> Size:
     return Size(int(found.group(1)), int(found.group(2)))
 
 
-def _element_row(names: PvNames, eid: str, y: int, indent: int) -> list[str]:
+def _element_row(names: PvNames, eid: str, y: int) -> list[str]:
     base = names.elements[eid]
     return [
-        edl.text(indent, y, 170 - indent + MARGIN, TEXT_H, eid),
+        edl.text(MARGIN, y, 170, TEXT_H, eid),
         *led_state(names, base, 185, y),
         edl.update(300, y, 260, TEXT_H, names.pv(base, "DESC")),
         edl.update(565, y, WIDTH - 565 - MARGIN, TEXT_H, names.pv(base, "DETAIL")),
@@ -109,7 +111,7 @@ def _detail(spec: StackSpec, names: PvNames, sid: str) -> str:
     objects += controls(names, base, MARGIN, y)
     y += ROW + 8
     for eid in _service_elements(service):
-        objects += _element_row(names, eid, y, MARGIN)
+        objects += _element_row(names, eid, y)
         y += ROW
     y += 8
     objects.append(
@@ -166,14 +168,27 @@ def generate(
     versus ``-``), or if a screen is bigger than ``budget``.
     """
     names = pv_names(spec)
+    detail_files = _detail_files(names, name)
     files: dict[str, str] = {}
 
     def add(file_name: str, text: str) -> None:
         _check_size(file_name, _screen_size(text), budget)
         files[file_name] = text
 
-    add(f"{name}.edl", top_screen(spec, names, name, budget, links))
+    add(top_file(name), top_screen(spec, names, name, budget, links))
     add(edges_file(name), edges_screen(spec, names, name, budget))
+    for sid, file_name in detail_files.items():
+        add(file_name, _detail(spec, names, sid))
+    return files
+
+
+def _detail_files(names: PvNames, name: str) -> dict[str, str]:
+    """Service id -> detail file name.
+
+    Raises ``ValueError`` if two services, or a service and the edges screen,
+    would write the same file.
+    """
+    result: dict[str, str] = {}
     owners: dict[str, str] = {}
     for sid, base in names.services.items():
         file_name = detail_file(name, base)
@@ -191,5 +206,5 @@ def generate(
                 "differ by more than case or '_' versus '-'"
             )
         owners[file_name] = sid
-        add(file_name, _detail(spec, names, sid))
-    return files
+        result[sid] = file_name
+    return result

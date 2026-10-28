@@ -101,8 +101,20 @@ def test_eight_instances_use_compact_cells() -> None:
 
 
 def test_too_many_instances_is_an_error() -> None:
-    with pytest.raises(ValueError, match="11 instance columns do not fit 1900 px"):
+    with pytest.raises(
+        ValueError,
+        match=r"x\.edl needs at least 2020 px, over the 1900 px budget \(--max-size\)$",
+    ):
         generate(load_config_text(_instanced(list(range(1, 12)))), "x")
+
+
+def test_narrow_budget_names_the_singleton_minimum() -> None:
+    # No instances: the full-width form needs 160 + 610 + 540 px.
+    with pytest.raises(
+        ValueError,
+        match=r"x\.edl needs at least 1310 px, over the 1000 px budget \(--max-size\)$",
+    ):
+        generate(load_config_text(_PLAIN), "x", budget=Size(1000, 1040))
 
 
 def test_more_columns_than_edge_led_slots_is_an_error() -> None:

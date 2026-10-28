@@ -14,6 +14,7 @@ from service_control_ioc.edm.screens import (
     edges_file,
     edges_screen,
     generate,
+    top_file,
 )
 from service_control_ioc.pvnames import pv_names
 
@@ -213,20 +214,28 @@ def test_cli_link_adds_button(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize(
-    "flag",
+    ("flag", "message"),
     [
-        ["--max-size", "big"],
-        ["--max-size", "0x10"],
-        ["--link", "w.edl"],
-        ["--link", "=w.edl"],
-        ["--link", "W=w.txt"],
-        ["--link", "W=../w.edl"],
+        (["--max-size", "big"], "'big' is not <width>x<height>"),
+        (["--max-size", "0x10"], "'0x10' must be larger than 0 x 0"),
+        (["--link", "w.edl"], "'w.edl' is not <label>=<file>.edl"),
+        (["--link", "=w.edl"], "'=w.edl' is not <label>=<file>.edl"),
+        (["--link", "W=w.txt"], "'w.txt' must be a .edl file name"),
+        (["--link", "W=../w.edl"], "'../w.edl' must be a .edl file name"),
+        (["--link", "Vue=vue-\u00e9.edl"], "must be ASCII"),
+        (["--link", "Caf\u00e9=w.edl"], "must be ASCII"),
     ],
 )
-def test_cli_rejects_bad_values(tmp_path: Path, flag: list[str]) -> None:
+def test_cli_rejects_bad_values(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    flag: list[str],
+    message: str,
+) -> None:
     with pytest.raises(SystemExit) as e:
         generate_edm.main([str(SCDEMO), str(tmp_path / "out"), *flag])
     assert e.value.code == 2
+    assert message in capsys.readouterr().err
 
 
 def test_top_active_fits_activating(spec: StackSpec, files: dict[str, str]) -> None:
@@ -302,3 +311,24 @@ services:
     )
     with pytest.raises(ValueError, match="same screen file"):
         generate(other, "x")
+
+
+def test_top_file_names_the_top_screen(spec: StackSpec) -> None:
+    assert top_file("scdemo") == "scdemo.edl"
+    assert top_file("scdemo") in generate(spec, "scdemo")
+
+
+def test_collision_is_reported_before_a_size_error() -> None:
+    # The top screen is too wide for the budget too, but the config error wins.
+    with pytest.raises(ValueError, match="same screen file"):
+        generate(load_config_text(_COLLIDING), "x", budget=Size(100, 100))
+    other = load_config_text(
+        """
+prefix: P
+top: a
+services:
+  a: {unit: a.service, pv: EDGES}
+"""
+    )
+    with pytest.raises(ValueError, match="same screen file"):
+        generate(other, "x", budget=Size(100, 100))

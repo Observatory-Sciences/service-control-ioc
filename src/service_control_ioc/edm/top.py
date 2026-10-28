@@ -36,6 +36,7 @@ from service_control_ioc.edm.layout import (
     detail_file,
     edges_file,
     led_state,
+    top_file,
 )
 from service_control_ioc.pvnames import PvNames
 
@@ -152,7 +153,7 @@ def _width(area: int) -> int:
     return _GRID_X + area + MARGIN + _RIGHT_W + MARGIN
 
 
-def _grid(spec: StackSpec, budget: Size) -> _Grid:
+def _grid(spec: StackSpec, name: str, budget: Size) -> _Grid:
     """Full cells if they fit ``budget.w``, else compact ones.
 
     Raises ``ValueError`` if neither fits, or if there are more columns than
@@ -164,7 +165,10 @@ def _grid(spec: StackSpec, budget: Size) -> _Grid:
         if _width(grid.area) <= budget.w:
             break
     else:
-        raise ValueError(f"{len(columns)} instance columns do not fit {budget.w} px")
+        raise ValueError(
+            f"{top_file(name)} needs at least {_width(grid.area)} px, over the "
+            f"{budget.w} px budget (--max-size)"
+        )
     if len(columns) > _EDGE_SLOTS:
         raise ValueError(
             f"{len(columns)} instance columns do not fit the {_EDGE_SLOTS} edge "
@@ -181,7 +185,7 @@ def top_screen(
     Raises ``ValueError`` if even compact cells do not fit ``budget.w``, or
     if the header links run past the right edge of the screen.
     """
-    grid = _grid(spec, budget)
+    grid = _grid(spec, name, budget)
     width = _width(grid.area)
     _check_links(len(links), width)
     objects = _header(spec, names, links, width)
