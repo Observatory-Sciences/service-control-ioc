@@ -41,7 +41,8 @@ def check_config(path: Path, *, pvs: bool = False) -> None:
 
 def main(argv: Sequence[str] | None = None) -> None:
     parser = argparse.ArgumentParser(
-        prog="service-control-check-config", description="Validate and summarise a config."
+        prog="service-control-check-config",
+        description="Validate and summarise a config.",
     )
     parser.add_argument("config", type=Path)
     parser.add_argument(
