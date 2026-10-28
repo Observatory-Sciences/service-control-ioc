@@ -19,18 +19,23 @@ from service_control_ioc.pvnames import pv_names
 
 REPO = Path(__file__).resolve().parents[2]
 SCDEMO = REPO / "teststack/config/scdemo.yaml"
-# Every screen fits a 1600x1200 display (the VM's Xvfb screen), so nothing
-# needs scrolling and screenshots show the whole screen.
-SCREEN_W, SCREEN_H = 1600, 1200
+XSPRESS = REPO / "tests/fixtures/xspress-4card.yaml"
+# Every screen fits the default budget, so nothing needs scrolling.
+SCREEN_W, SCREEN_H = 1900, 1040
 # courier-medium-r-12.0 lines are 19 px apart in EDM's multiLineTextUpdate; a
 # pane shows a full 20-line ring (journal and events) with its margins.
 PANE_LINES, LINE_H, PANE_MARGINS = 20, 19, 20
 PV_LINE = re.compile(r'^(?:controlPv|visPv|alarmPv) "([^"]*)"$', re.MULTILINE)
 
 
+_CONFIGS = {"scdemo": SCDEMO, "xspress": XSPRESS}
+# Run a test against both configs: ``spec`` and ``files`` follow the param.
+both_configs = pytest.mark.parametrize("spec", sorted(_CONFIGS), indirect=True)
+
+
 @pytest.fixture(scope="module")
-def spec() -> StackSpec:
-    return load_config(SCDEMO)
+def spec(request: pytest.FixtureRequest) -> StackSpec:
+    return load_config(_CONFIGS[getattr(request, "param", "scdemo")])
 
 
 @pytest.fixture(scope="module")
@@ -53,6 +58,7 @@ def test_file_set(files: dict[str, str]) -> None:
     ]
 
 
+@both_configs
 def test_every_pv_is_served(spec: StackSpec, files: dict[str, str]) -> None:
     served = set(pv_names(spec).all())
     for name, text in files.items():
@@ -81,6 +87,7 @@ def test_stack_buttons_follow_stack_group(spec: StackSpec) -> None:
     assert f"{spec.prefix}:START" not in PV_LINE.findall(generate(plain, "x")["x.edl"])
 
 
+@both_configs
 def test_related_displays_point_to_generated_files(files: dict[str, str]) -> None:
     targets = {
         m
@@ -91,6 +98,7 @@ def test_related_displays_point_to_generated_files(files: dict[str, str]) -> Non
     assert targets <= set(files)
 
 
+@both_configs
 def test_objects_balanced_and_in_bounds(files: dict[str, str]) -> None:
     for name, text in files.items():
         assert text.count("beginObjectProperties") == text.count("endObjectProperties")
@@ -189,11 +197,15 @@ def test_generate_edm_reports_collision_without_traceback(
 
 def test_top_active_fits_activating(spec: StackSpec, files: dict[str, str]) -> None:
     """Regression (Task 5, seen live): 80 px showed "activating/start-post"
-    as "activating/sta". 21 characters of arial 12 need about 150 px."""
+    as "activating/sta". 21 characters of arial 12 need about 150 px. The top
+    screen shows ACTIVE only for services without an instance."""
     names = pv_names(spec)
-    for base in names.services.values():
-        active = _geometry(files["scdemo.edl"], names.pv(base, "ACTIVE"))
-        assert active["w"] >= 150, base
+    for sid, base in names.services.items():
+        pv = names.pv(base, "ACTIVE")
+        detail = _geometry(files[f"scdemo-{base.lower()}.edl"], pv)
+        assert detail["w"] >= 150, base
+        if spec.services[sid].instance is None:
+            assert _geometry(files["scdemo.edl"], pv)["w"] >= 150, base
 
 
 def _multiline_lines(text: str, pv: str) -> int:
@@ -240,9 +252,9 @@ def test_edges_screen_splits_into_columns(xspress: StackSpec) -> None:
 
 def test_budget_is_enforced(spec: StackSpec) -> None:
     with pytest.raises(
-        ValueError, match=r"scdemo\.edl is \d+ x \d+ px, over the 600 x 400 px budget"
+        ValueError, match=r"scdemo\.edl is \d+ x \d+ px, over the 1900 x 400 px budget"
     ):
-        generate(spec, "scdemo", budget=Size(600, 400))
+        generate(spec, "scdemo", budget=Size(1900, 400))
 
 
 def test_edges_file_collides_with_detail_screen() -> None:
