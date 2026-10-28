@@ -1,7 +1,7 @@
 [project]
 name = "service-control-ioc"
 version = "0.1.0"
-description = "Add your description here"
+description = "An EPICS python softIOC to monitor and control systemd services and their inter connetions"
 authors = [
     { name = "Ulrik Pedersen", email = "ukp@observatorysciences.co.uk" }
 ]
