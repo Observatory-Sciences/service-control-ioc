@@ -1,7 +1,8 @@
 """Fixtures for the integration tests (``-m container``).
 
 They run against a real systemd target chosen by ``SCIOC_TARGET`` (``container``,
-the plan 1 Rocky 9 container, or ``vm``, the test VM; see ``targets.py``) and
+the plan 1 Rocky 9 container, or ``vm``, the test VM at ``SCIOC_VM_HOST`` logged
+into as ``SCIOC_VM_USER``; see ``targets.py``) and
 run ``service-control-ioc`` there as the transient unit ``scioc-dev``, against
 real systemd, D-Bus, /proc and journald. The tool serves its IOC there too, on
 the loopback CA of ``/etc/scdemo/ca.env``; ``Host.ca`` reads and writes its PVs

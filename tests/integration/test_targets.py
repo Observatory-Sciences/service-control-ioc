@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from integration.targets import (
+    REPO,
     ContainerTarget,
     ShellError,
     VmTarget,
@@ -16,6 +17,12 @@ from integration.targets import (
 )
 
 Call = list[str]
+HOST = "test-vm"
+LOGIN = "vmuser"
+
+
+def vm() -> VmTarget:
+    return VmTarget(host=HOST, login_user=LOGIN)
 
 
 class FakeRun:
@@ -36,11 +43,14 @@ class FakeRun:
         )
 
 
+VM_ENV = {"SCIOC_TARGET": "vm", "SCIOC_VM_HOST": HOST, "SCIOC_VM_USER": LOGIN}
+
+
 @pytest.mark.parametrize(
     ("env", "expected"),
     [
         ({"SCIOC_TARGET": "container"}, ContainerTarget),
-        ({"SCIOC_TARGET": "vm"}, VmTarget),
+        (VM_ENV, VmTarget),
         ({"SCIOC_CONTAINER": "1"}, ContainerTarget),
         ({}, None),
         ({"SCIOC_CONTAINER": "0"}, None),
@@ -49,8 +59,8 @@ class FakeRun:
 def test_target_from_env(
     monkeypatch: pytest.MonkeyPatch, env: dict[str, str], expected: type | None
 ) -> None:
-    monkeypatch.delenv("SCIOC_TARGET", raising=False)
-    monkeypatch.delenv("SCIOC_CONTAINER", raising=False)
+    for key in ("SCIOC_TARGET", "SCIOC_CONTAINER", "SCIOC_VM_HOST", "SCIOC_VM_USER"):
+        monkeypatch.delenv(key, raising=False)
     for key, value in env.items():
         monkeypatch.setenv(key, value)
     target = target_from_env()
@@ -58,6 +68,27 @@ def test_target_from_env(
         assert target is None
     else:
         assert isinstance(target, expected)
+
+
+def test_vm_target_from_env_reads_host_and_user(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    for key, value in VM_ENV.items():
+        monkeypatch.setenv(key, value)
+    target = target_from_env()
+    assert isinstance(target, VmTarget)
+    assert (target.host, target.src) == (HOST, f"/home/{LOGIN}/service-control-ioc")
+
+
+@pytest.mark.parametrize("missing", ["SCIOC_VM_HOST", "SCIOC_VM_USER"])
+def test_vm_target_from_env_needs_host_and_user(
+    monkeypatch: pytest.MonkeyPatch, missing: str
+) -> None:
+    for key, value in VM_ENV.items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.setenv(missing, "")
+    with pytest.raises(ValueError, match="SCIOC_VM_HOST and SCIOC_VM_USER"):
+        target_from_env()
 
 
 def test_target_from_env_rejects_unknown(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -72,17 +103,18 @@ def test_target_attributes() -> None:
         "scdemo",
         "/src",
     )
-    assert (VmTarget.name, VmTarget.user, VmTarget.src) == (
+    target = vm()
+    assert (target.name, target.user, target.src) == (
         "vm",
         "xspress",
-        "/home/vmuser/service-control-ioc",
+        f"/home/{LOGIN}/service-control-ioc",
     )
 
 
 def test_vm_target_sh_uses_mux_and_sudo(monkeypatch: pytest.MonkeyPatch) -> None:
     fake = FakeRun(stdout="ok\n")
     monkeypatch.setattr(subprocess, "run", fake)
-    assert VmTarget().sh("echo 'hi there'") == "ok\n"
+    assert vm().sh("echo 'hi there'") == "ok\n"
     assert fake.calls == [
         [
             "ssh",
@@ -94,7 +126,7 @@ def test_vm_target_sh_uses_mux_and_sudo(monkeypatch: pytest.MonkeyPatch) -> None
             "ControlPersist=15m",
             "-o",
             "ConnectTimeout=20",
-            "test-vm",
+            HOST,
             (
                 "sudo -n env PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin"
                 ":/sbin:/bin bash -c 'echo '\"'\"'hi there'\"'\"''"
@@ -108,34 +140,34 @@ def test_vm_target_ssh_failure_is_reported(monkeypatch: pytest.MonkeyPatch) -> N
         subprocess, "run", FakeRun(255, stderr="timed out during banner")
     )
     with pytest.raises(
-        ShellError, match="VM test-vm unreachable: timed out during banner"
+        ShellError, match=f"VM {HOST} unreachable: timed out during banner"
     ):
-        VmTarget().sh("true")
+        vm().sh("true")
 
 
 def test_vm_command_failure_is_not_unreachable(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(subprocess, "run", FakeRun(3, stdout="out", stderr="bad"))
     with pytest.raises(ShellError, match="exited 3") as info:
-        VmTarget().sh("false")
+        vm().sh("false")
     assert "unreachable" not in str(info.value)
 
 
 def test_vm_prepare_rsync_excludes(monkeypatch: pytest.MonkeyPatch) -> None:
     fake = FakeRun()
     monkeypatch.setattr(subprocess, "run", fake)
-    VmTarget().prepare()
+    vm().prepare()
     prepare, rsync = fake.calls[0], fake.calls[1]
-    assert prepare[-1] == "sudo -n bash -s -- vmuser"
+    assert prepare[-1] == f"sudo -n bash -s -- {LOGIN}"
     assert rsync[0] == "rsync"
     excludes = [rsync[i + 1] for i, arg in enumerate(rsync) if arg == "--exclude"]
     assert {".venv", ".git", "__pycache__", ".ruff_cache"} <= set(excludes)
     assert "--delete" in rsync
-    assert rsync[-1] == "test-vm:/home/vmuser/service-control-ioc/"
-    assert Path(rsync[-2]).name == "service-control-ioc"
+    assert rsync[-1] == f"{HOST}:/home/{LOGIN}/service-control-ioc/"
+    assert rsync[-2] == f"{REPO}/"
     install = fake.calls[2]
     assert install[-1].endswith(
-        "bash /home/vmuser/service-control-ioc/teststack/install.sh --user xspress"
-        " /home/vmuser/service-control-ioc'"
+        f"bash /home/{LOGIN}/service-control-ioc/teststack/install.sh --user xspress"
+        f" /home/{LOGIN}/service-control-ioc'"
     )
 
 
@@ -154,13 +186,13 @@ def test_vm_fetch_is_binary_safe(
 
     monkeypatch.setattr(subprocess, "run", fake_run)
     local = tmp_path / "shot.png"
-    VmTarget().fetch("/tmp/my shot.png", local)
+    vm().fetch("/tmp/my shot.png", local)
     assert local.read_bytes() == png
     assert calls == [
         [
             "ssh",
             *VmTarget.SSH_OPTS,
-            "test-vm",
+            HOST,
             "sudo -n cat '/tmp/my shot.png'",
         ]
     ]
@@ -174,12 +206,12 @@ def test_vm_timeouts_become_unreachable(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     monkeypatch.setattr(subprocess, "run", _timeout)
-    target = VmTarget()
-    with pytest.raises(ShellError, match="VM test-vm unreachable"):
+    target = vm()
+    with pytest.raises(ShellError, match=f"VM {HOST} unreachable"):
         target.sh("true")
-    with pytest.raises(ShellError, match="VM test-vm unreachable"):
+    with pytest.raises(ShellError, match=f"VM {HOST} unreachable"):
         target.prepare()
-    with pytest.raises(ShellError, match="VM test-vm unreachable"):
+    with pytest.raises(ShellError, match=f"VM {HOST} unreachable"):
         target.fetch("/tmp/x", tmp_path / "x")
 
 
@@ -191,5 +223,5 @@ def test_vm_ssh_does_not_read_stdin(monkeypatch: pytest.MonkeyPatch) -> None:
         return subprocess.CompletedProcess(argv, 0, "", "")
 
     monkeypatch.setattr(subprocess, "run", fake_run)
-    VmTarget().sh("true")
+    vm().sh("true")
     assert seen["stdin"] is subprocess.DEVNULL

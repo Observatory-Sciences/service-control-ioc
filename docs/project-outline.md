@@ -258,7 +258,7 @@ The test services must have:
   through every startup and fault-injection scenario, checking the logged
   events, PVs and diagnoses. On this Mac the container is aarch64, which is
   fine for pure-Python code.
-- **Target integration**: the shared VM `test-vm` (x86_64, with
+- **Target integration**: the shared test VM (x86_64, with
   the real QD stack installed), using dev unit names and a dev PV prefix.
 
 ## 9. Applying it to the QD Xspress stack (later)
@@ -306,7 +306,7 @@ Those proposals, and the packaging of this tool, are made separately.
 | D11 | Front-end                   | A pythonSoftIOC service publishing PVs over Channel Access, plus Python `logging` of every event. No interactive CLI.                                                                                                                                             |
 | D12 | PV interface                | Strict compatibility with the `odinprocservcontrol` and `procServControl` PVs, with new PVs added alongside.                                                                                                                                                     |
 | D13 | Test stack                  | sink ← relay ← controller. UDP flows relay → sink, ZMQ runs controller → relay. Gating uses `qd-wait-for-port`-style helpers and at least one `Type=notify` service. More services can be added when a pattern needs one.                                         |
-| D14 | Integration environments    | A local Rocky 9 systemd container (Rancher Desktop) plus the shared VM `test-vm`.                                                                                                                                                                      |
+| D14 | Integration environments    | A local Rocky 9 systemd container (Rancher Desktop) plus the shared test VM.                                                                                                                                                                                      |
 
 ### For the detailed design
 

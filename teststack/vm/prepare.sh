@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
-# Prepare the QD test VM (test-vm, Rocky 9) for the integration
+# Prepare the QD test VM (Rocky 9) for the integration
 # suite. Run as root. Idempotent. Installs only what docs/acceptance/evidence/
 # vm-probe.txt found missing: xwd (EPEL), netpbm-progs, xorg-x11-fonts-misc, rsync
 # (found missing on first live run: VmTarget.prepare() syncs the repo with it), lsof
 # (found missing on the final unit-suite run: teststack's relay test uses it) and
 # uv (pinned, for root at /usr/local/bin/uv and for the login user). It does not
 # touch epel-release, the qd-* units or any account.
-# Usage: prepare.sh [login-user]   (default: vmuser, the account that owns the repo)
+# Usage: prepare.sh <login-user>   (the ssh login account that owns the repo copy)
 set -euo pipefail
 
 UV_VERSION=0.13.1
-LOGIN_USER=${1:-vmuser}
+LOGIN_USER=${1:?usage: prepare.sh <login-user>}
 
 if [ "$(id -u)" -ne 0 ]; then
     echo "prepare.sh: must run as root" >&2

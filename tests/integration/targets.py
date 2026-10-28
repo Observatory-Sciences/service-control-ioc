@@ -1,8 +1,10 @@
 """Where the integration tests run: the Rocky 9 container or the test VM.
 
 ``target_from_env()`` picks one from ``SCIOC_TARGET`` (``container`` or ``vm``;
-the legacy ``SCIOC_CONTAINER=1`` means container). A target runs bash as root,
-prepares itself (sync and install the test stack) and copies files back.
+the legacy ``SCIOC_CONTAINER=1`` means container). ``vm`` also needs
+``SCIOC_VM_HOST`` (the ssh host or alias) and ``SCIOC_VM_USER`` (the ssh login
+user, who owns the repo copy on the VM). A target runs bash as root, prepares
+itself (sync and install the test stack) and copies files back.
 """
 
 import os
@@ -18,7 +20,6 @@ CONTAINER_NAME: Final = "scdemo-el9"
 RSYNC_EXCLUDES: Final = (".venv", ".git", "__pycache__", ".ruff_cache")
 SSH_UNREACHABLE: Final = 255
 ROOT_PATH: Final = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-LOGIN_USER: Final = "vmuser"  # owns the repo copy on the VM
 
 
 class ShellError(AssertionError):
@@ -96,7 +97,6 @@ class ContainerTarget:
 class VmTarget:
     """The dedicated test VM, over a multiplexed ssh connection with sudo."""
 
-    HOST: Final = "test-vm"
     SSH_OPTS: Final = (
         "-o",
         "ControlMaster=auto",
@@ -109,18 +109,25 @@ class VmTarget:
     )
     name: str = "vm"
     user: str = "xspress"
-    src: str = f"/home/{LOGIN_USER}/service-control-ioc"
+    host: str  # ssh host or alias
+    login_user: str  # the ssh login user; owns the repo copy
+    src: str
+
+    def __init__(self, host: str, login_user: str) -> None:
+        self.host = host
+        self.login_user = login_user
+        self.src = f"/home/{login_user}/service-control-ioc"
 
     def _ssh(
         self, remote_cmd: str, timeout: float, stdin_text: str | None = None
     ) -> subprocess.CompletedProcess[str]:
-        argv = ["ssh", *self.SSH_OPTS, self.HOST, remote_cmd]
+        argv = ["ssh", *self.SSH_OPTS, self.host, remote_cmd]
         try:
             proc = _run(argv, timeout, stdin_text)
         except subprocess.TimeoutExpired as err:
-            raise ShellError(f"VM {self.HOST} unreachable: {err}") from err
+            raise ShellError(f"VM {self.host} unreachable: {err}") from err
         if proc.returncode == SSH_UNREACHABLE:
-            raise ShellError(f"VM {self.HOST} unreachable: {proc.stderr.strip()}")
+            raise ShellError(f"VM {self.host} unreachable: {proc.stderr.strip()}")
         return proc
 
     def sh(self, cmd: str, timeout: float = 120) -> str:
@@ -129,15 +136,17 @@ class VmTarget:
         remote = f"sudo -n env PATH={ROOT_PATH} bash -c {shlex.quote(cmd)}"
         proc = self._ssh(remote, timeout)
         if proc.returncode != 0:
-            raise _failure(["ssh", self.HOST, remote], proc)
+            raise _failure(["ssh", self.host, remote], proc)
         return proc.stdout
 
     def prepare(self) -> None:
         # prepare.sh first: it installs rsync, which the sync below needs.
         script = (REPO / "teststack" / "vm" / "prepare.sh").read_text()
-        proc = self._ssh(f"sudo -n bash -s -- {shlex.quote(LOGIN_USER)}", 900, script)
+        proc = self._ssh(
+            f"sudo -n bash -s -- {shlex.quote(self.login_user)}", 900, script
+        )
         if proc.returncode != 0:
-            raise _failure(["ssh", self.HOST, "prepare.sh"], proc)
+            raise _failure(["ssh", self.host, "prepare.sh"], proc)
         excludes = [arg for ex in RSYNC_EXCLUDES for arg in ("--exclude", ex)]
         argv = [
             "rsync",
@@ -148,15 +157,15 @@ class VmTarget:
             shlex.join(["ssh", *self.SSH_OPTS]),
             f"{REPO}/",
             # Absolute, so it does not depend on the ssh login user's home.
-            f"{self.HOST}:{self.src}/",
+            f"{self.host}:{self.src}/",
         ]
         try:
             proc = _run(argv, 600)
         except subprocess.TimeoutExpired as err:
-            raise ShellError(f"VM {self.HOST} unreachable: {err}") from err
+            raise ShellError(f"VM {self.host} unreachable: {err}") from err
         if proc.returncode != 0:
             if proc.returncode == SSH_UNREACHABLE:
-                raise ShellError(f"VM {self.HOST} unreachable: {proc.stderr.strip()}")
+                raise ShellError(f"VM {self.host} unreachable: {proc.stderr.strip()}")
             raise _failure(argv, proc)
         self.sh(
             f"bash {self.src}/teststack/install.sh --user {self.user} {self.src}",
@@ -168,7 +177,7 @@ class VmTarget:
         argv = [
             "ssh",
             *self.SSH_OPTS,
-            self.HOST,
+            self.host,
             f"sudo -n cat {shlex.quote(remote)}",
         ]
         try:
@@ -180,11 +189,11 @@ class VmTarget:
                 stdin=subprocess.DEVNULL,
             )
         except subprocess.TimeoutExpired as err:
-            raise ShellError(f"VM {self.HOST} unreachable: {err}") from err
+            raise ShellError(f"VM {self.host} unreachable: {err}") from err
         if proc.returncode != 0:
             stderr = proc.stderr.decode(errors="replace").strip()
             if proc.returncode == SSH_UNREACHABLE:
-                raise ShellError(f"VM {self.HOST} unreachable: {stderr}")
+                raise ShellError(f"VM {self.host} unreachable: {stderr}")
             raise ShellError(f"{shlex.join(argv)} exited {proc.returncode}: {stderr}")
         local.write_bytes(proc.stdout)
 
@@ -199,5 +208,9 @@ def target_from_env() -> Target | None:
     if choice == "container":
         return ContainerTarget()
     if choice == "vm":
-        return VmTarget()
+        host = os.environ.get("SCIOC_VM_HOST", "")
+        login_user = os.environ.get("SCIOC_VM_USER", "")
+        if not host or not login_user:
+            raise ValueError("SCIOC_TARGET=vm needs SCIOC_VM_HOST and SCIOC_VM_USER")
+        return VmTarget(host, login_user)
     raise ValueError(f"SCIOC_TARGET={choice!r}: expected 'container' or 'vm'")

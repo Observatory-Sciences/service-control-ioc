@@ -523,7 +523,7 @@ PVs.
 - **Local**: a Rocky 9 container with systemd as PID 1 under Rancher
   Desktop (aarch64), running the test stack, its gates, the tool and the
   scenarios.
-- **Test VM** `test-vm` (x86_64): the same test stack and tool,
+- **Test VM** (x86_64): the same test stack and tool,
   installed with `scdemo-*` units and a dev PV prefix alongside the
   installed QD stack, which they must not disturb. There the units and the
   tool run as the existing `xspress` account. The `qd-test-vm` skill
@@ -554,7 +554,7 @@ through the PVs and from the screen.
   Hardware edges sit behind the `hardware` flag. The card edges, the DAQ
   listeners (15150+n) and the FR→xspress-control edges are `post`
   (Section 5.3).
-- Validation on `test-vm`, then the `qd-rpm-build` proposals.
+- Validation on the test VM, then the `qd-rpm-build` proposals.
 
 ## 12. Calls made in this design (please check)
 
