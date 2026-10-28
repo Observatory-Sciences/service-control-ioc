@@ -178,10 +178,12 @@ def top_screen(
 ) -> str:
     """The stack header, the instance grid, and the edges and events.
 
-    Raises ``ValueError`` if even compact cells do not fit ``budget.w``.
+    Raises ``ValueError`` if even compact cells do not fit ``budget.w``, or
+    if the header links run past the right edge of the screen.
     """
     grid = _grid(spec, budget)
     width = _width(grid.area)
+    _check_links(len(links), width)
     objects = _header(spec, names, links, width)
     heading_y = _FAULTS_Y + FINDING_HEIGHT + GAP
     left, left_bottom = _left(spec, names, name, grid, heading_y)
@@ -198,6 +200,16 @@ def top_screen(
     y = max(left_bottom, top + height) + GAP
     objects.append(edl.exit_button(width - MARGIN - EXIT_W, y))
     return edl.screen(width, y + ROW + MARGIN, f"{spec.prefix} stack", objects)
+
+
+def _check_links(count: int, width: int) -> None:
+    """Raise ``ValueError`` if ``count`` header links overrun a ``width`` screen."""
+    room = width - MARGIN - _LINKS_X - _LINK_W
+    fit = room // _LINK_STEP + 1 if room >= 0 else 0
+    if count > fit:
+        raise ValueError(
+            f"{count} header links do not fit the {width} px top screen ({fit} fit)"
+        )
 
 
 def _header(

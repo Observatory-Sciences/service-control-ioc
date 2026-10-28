@@ -134,6 +134,16 @@ def test_links_add_header_buttons(xspress: StackSpec) -> None:
     assert 'buttonLabel "Wiring"' in top
 
 
+def test_header_links_must_fit_the_top_screen(scdemo: StackSpec) -> None:
+    def links(n: int) -> list[Link]:
+        return [Link(f"L{i}", f"l{i}.edl") for i in range(n)]
+
+    top = generate(scdemo, "scdemo", links=links(4))["scdemo.edl"]
+    assert 'buttonLabel "L3"' in top
+    with pytest.raises(ValueError, match=r"5 header links.*1310 px.*4 fit"):
+        generate(scdemo, "scdemo", links=links(5))
+
+
 def test_duplicate_edge_labels_get_their_own_rows(scdemo: StackSpec) -> None:
     top = generate(scdemo, "scdemo")["scdemo.edl"]
     assert top.count('"relay -> sink.udp  (post)"') == 2

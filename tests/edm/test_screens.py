@@ -195,6 +195,40 @@ def test_generate_edm_reports_collision_without_traceback(
     assert "same screen file" in capsys.readouterr().err
 
 
+def test_cli_max_size_too_small(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    with pytest.raises(SystemExit) as e:
+        generate_edm.main(
+            [str(SCDEMO), str(tmp_path / "out"), "--max-size", "1400x400"]
+        )
+    assert e.value.code == 2
+    assert "over the 1400 x 400 px budget" in capsys.readouterr().err
+
+
+def test_cli_link_adds_button(tmp_path: Path) -> None:
+    out = tmp_path / "out"
+    generate_edm.main([str(SCDEMO), str(out), "--link", "Wiring=w.edl"])
+    assert '0 "w.edl"' in (out / "scdemo-sc.edl").read_text()
+
+
+@pytest.mark.parametrize(
+    "flag",
+    [
+        ["--max-size", "big"],
+        ["--max-size", "0x10"],
+        ["--link", "w.edl"],
+        ["--link", "=w.edl"],
+        ["--link", "W=w.txt"],
+        ["--link", "W=../w.edl"],
+    ],
+)
+def test_cli_rejects_bad_values(tmp_path: Path, flag: list[str]) -> None:
+    with pytest.raises(SystemExit) as e:
+        generate_edm.main([str(SCDEMO), str(tmp_path / "out"), *flag])
+    assert e.value.code == 2
+
+
 def test_top_active_fits_activating(spec: StackSpec, files: dict[str, str]) -> None:
     """Regression (Task 5, seen live): 80 px showed "activating/start-post"
     as "activating/sta". 21 characters of arial 12 need about 150 px. The top
