@@ -805,7 +805,7 @@ requires-dist = [{ name = "pyzmq", specifier = ">=27.2.0" }]
 
 [[package]]
 name = "service-control-ioc"
-version = "0.2.0"
+version = "0.2.1"
 source = { editable = "." }
 dependencies = [
     { name = "dbus-fast" },
